@@ -61,11 +61,28 @@ pub const Format = enum(i8) {
 
 pub const Data = union(Format) {
     int8: []i8,
-    int64: []i16,
+    int16: []i16,
     int32: []i32,
     int64: []i64,
     float32: []f32,
     float64: []f64,
+
+    /// Fetch the underlying storage of this data.
+    pub fn storage(data: Data) []u8 {
+        return switch (data) {
+            .int8 => |x| std.mem.sliceAsBytes(x),
+            .int16 => |x| std.mem.sliceAsBytes(x),
+            .int32 => |x| std.mem.sliceAsBytes(x),
+            .int64 => |x| std.mem.sliceAsBytes(x),
+            .float32 => |x| std.mem.sliceAsBytes(x),
+            .float64 => |x| std.mem.sliceAsBytes(x),
+        };
+    }
+
+    /// Utility method to deal with freeing data
+    pub fn free(data: Data, allocator: *Allocator) void {
+        allocator.free(data.storage());
+    }
 };
 
 pub const Extension = enum {
@@ -157,38 +174,41 @@ pub fn readNextHeader(self: *Fits) !bool {
 }
 
 /// Read the data associated to the current header.
-/// Asserts that the supplied storage buffer is large enough.
+/// Asserts that the supplied storage buffer is the exact required size.
 /// Note: This function can only be called once for the current header
 pub fn readData(self: *Fits, storage: []align(data_align) u8) !Data {
     const data_size = self.header.dataSize();
-    std.debug.assert(data_size >= storage.len);
+    std.debug.assert(data_size == storage.len);
 
     // First, read the data into the buffer raw, and then flip the endianness if required only after.
-    if (self.reader.readAll(storage) != data_size) {
+    if ((try self.reader.readAll(storage)) != data_size) {
         return error.UnexpectedDataEnd;
     }
-    try seekNextBlock();
+    try self.seekNextBlock();
 
     self.data_read = true;
 
-    const size = self.header.size();
+    inline for (@typeInfo(Data).Union.fields) |field| {
+        if (self.header.format == @field(Format, field.name)) {
+            const T = std.meta.Child(field.field_type);
+            const IntType = std.meta.Int(.unsigned, @bitSizeOf(T));
+            if (@sizeOf(IntType) > 1) {
+                for (std.mem.bytesAsSlice(IntType, storage)) |*x| {
+                    x.* = @byteSwap(IntType, x.*);
+                }
+            }
 
-    const bit_width = self.header.format().bitWidth();
-    inline for ([_]type{u16, u32, u64}) |T| {
-        if (@bitSizeOf(T) == bit_width) {
-            const data = @ptrCast(T, storage.ptr)[0..size];
-            for (data) |*x| x.* = @byteSwap(T, x.*);
+            return @unionInit(Data, field.name, std.mem.bytesAsSlice(T, storage));
         }
     }
 
-    return switch (self.header.format()) {
-        .int8 => Data{.int8 = @ptrCast(i8, storage.ptr)[0..size]},
-        .int16 => Data{.int16 = @ptrCast(i16, storage.ptr)[0..size]},
-        .int32 => Data{.int32 = @ptrCast(i32, storage.ptr)[0..size]},
-        .int64 => Data{.int64 = @ptrCast(i64, storage.ptr)[0..size]},
-        .float32 => Data{.float32 = @ptrCast(f32, storage.ptr)[0..size]},
-        .float64 => Data{.float64 = @ptrCast(f64, storage.ptr)[0..size]},
-    };
+    unreachable;
+}
+
+pub fn readDataAlloc(self: *Fits, allocator: *Allocator) !Data {
+    var storage = try allocator.allocWithOptions(u8, self.header.dataSize(), data_align, null);
+    errdefer allocator.free(storage);
+    return try self.readData(storage);
 }
 
 fn alignToNextBlock(offset: anytype) @TypeOf(offset) {

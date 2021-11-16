@@ -107,6 +107,19 @@ pub fn main() !void {
         std.debug.print("Total elements: {}\n", .{ fits.header.size() });
         std.debug.print("Data size: {:.2}\n", .{ std.fmt.fmtIntSizeBin(fits.header.dataSize()) });
 
+        const data = try fits.readDataAlloc(allocator);
+        defer data.free(allocator);
+
+        const arr = data.float64;
+        var min: f64 = std.math.f64_max;
+        var max: f64 = -std.math.f64_max;
+        for (arr) |x| {
+            max = std.math.max(max, x);
+            min = std.math.min(min, x);
+        }
+
+        std.debug.print("Data range: [{d:.2}, {d:.2}]\n", .{ min, max });
+
         if (!try fits.readNextHeader()) break;
     }
 }
