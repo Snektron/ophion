@@ -17,14 +17,14 @@ pub fn apply(a: Allocator, matrix: BayerMatrix, image: GrayscaleImage) !ColorIma
     while (y < result.height) : (y += 1) {
         var x: usize = 0;
         while (x < result.width) : (x += 1) {
-            const r = image.get(x * 2,      y * 2);
-            const g0 = image.get(x * 2 + 1, y * 2);
-            const g1 = image.get(x * 2,     y * 2 + 1);
-            const b = image.get(x * 2 + 1,  y * 2 + 1);
+            const r = image.get(x * 2,      y * 2)[0];
+            const g0 = image.get(x * 2 + 1, y * 2)[0];
+            const g1 = image.get(x * 2,     y * 2 + 1)[0];
+            const b = image.get(x * 2 + 1,  y * 2 + 1)[0];
             result.set(x, y, .{
-                .r = r,
-                .g = (g0 + g1) / 2,
-                .b = b,
+                r,
+                (g0 + g1) / 2,
+                b,
             });
         }
     }

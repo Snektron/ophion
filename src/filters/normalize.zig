@@ -10,18 +10,16 @@ pub fn apply(image: ColorImage) void {
     var max: f32 = std.math.f32_min;
 
     for (pixels) |pixel| {
-        if (pixel.r < min) min = pixel.r;
-        if (pixel.r > max) max = pixel.r;
-        if (pixel.g < min) min = pixel.g;
-        if (pixel.g > max) max = pixel.g;
-        if (pixel.b < min) min = pixel.b;
-        if (pixel.b > max) max = pixel.b;
+        for (pixel) |channel| {
+            if (channel < min) min = channel;
+            if (channel > max) max = channel;
+        }
     }
 
     const inv_diff = 1 / (max - min);
     for (pixels) |*pixel| {
-        pixel.r = (pixel.r - min) * inv_diff;
-        pixel.g = (pixel.g - min) * inv_diff;
-        pixel.b = (pixel.b - min) * inv_diff;
+        for (pixel.*) |*channel| {
+            channel.* = (channel.* - min) * inv_diff;
+        }
     }
 }

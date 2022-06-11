@@ -6,31 +6,24 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
-pub const ColorChannel = f32;
+pub const ColorImage = Image(3);
+pub const GrayscaleImage = Image(1);
 
-// We only care about images with floats for now.
-pub const ColorImage = Image(Rgb);
-pub const GrayscaleImage = Image(ColorChannel);
-
-const Rgb = struct {
-    r: ColorChannel,
-    g: ColorChannel,
-    b: ColorChannel,
-};
-
-fn Image(comptime T: type) type {
+fn Image(comptime components: usize) type {
     return struct {
         const Self = @This();
 
+        pub const Pixel = [components]f32;
+
         width: usize,
         height: usize,
-        data: [*]T,
+        data: [*]Pixel,
 
         pub fn alloc(a: Allocator, width: usize, height: usize) !Self {
             return Self{
                 .width = width,
                 .height = height,
-                .data = (try a.alloc(T, width * height)).ptr,
+                .data = (try a.alloc(Pixel, width * height)).ptr,
             };
         }
 
@@ -47,15 +40,15 @@ fn Image(comptime T: type) type {
             return y * self.width + x;
         }
 
-        pub fn get(self: Self, x: usize, y: usize) f32 {
+        pub fn get(self: Self, x: usize, y: usize) Pixel {
             return self.data[self.index(x, y)];
         }
 
-        pub fn set(self: Self, x: usize, y: usize, value: T) void {
+        pub fn set(self: Self, x: usize, y: usize, value: Pixel) void {
             self.data[self.index(x, y)] = value;
         }
 
-        pub fn pixels(self: Self) []T {
+        pub fn pixels(self: Self) []Pixel {
             return self.data[0..self.width * self.height];
         }
     };

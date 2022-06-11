@@ -84,7 +84,9 @@ pub fn main() !void {
         defer file.close();
 
         var source = std.io.StreamSource{.file = file};
-        break :blk try formats.fits.decoder().decode(allocator, &source);
+        var decoder = formats.fits.decoder(allocator);
+        defer decoder.deinit();
+        break :blk try decoder.decode(allocator, &source);
     };
     defer image.free(allocator);
 

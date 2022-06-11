@@ -11,13 +11,15 @@ pub const Encoder = struct {
 
     pub fn encode(self: Encoder, source: *StreamSource, img: ColorImage) !void {
         _ = self;
-        const writer = source.writer();
+        var bw = std.io.bufferedWriter(source.writer());
+        const writer = bw.writer();
         try writer.print("P6 {} {} 255\n", .{ img.width, img.height });
         for (img.pixels()) |pixel| {
-            try writer.writeIntLittle(u8, convertChannel(pixel.r));
-            try writer.writeIntLittle(u8, convertChannel(pixel.g));
-            try writer.writeIntLittle(u8, convertChannel(pixel.b));
+            try writer.writeIntLittle(u8, convertChannel(pixel[0]));
+            try writer.writeIntLittle(u8, convertChannel(pixel[1]));
+            try writer.writeIntLittle(u8, convertChannel(pixel[2]));
         }
+        try bw.flush();
     }
 };
 

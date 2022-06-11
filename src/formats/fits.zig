@@ -339,7 +339,7 @@ pub const Fits = struct {
         // First read all the data into the buffer raw, and then swap them after if required.
         var reader = self.source.reader();
         const data_size = hdu.dataSize();
-        assert((try reader.readAll(storage)) == data_size); // Data present should be verified by the parsing part.
+        assert((try reader.readAll(storage[0..data_size])) == data_size); // Data present should be verified by the parsing part.
 
         const buffer = storage[0..data_size];
 
@@ -811,9 +811,19 @@ const ValueParser = struct {
 };
 
 pub const Decoder = struct {
-    pub fn decode(self: Decoder, a: Allocator, source: *StreamSource) !ColorImage {
-        _ = self;
-        const fits = try read(a, source);
+    /// Allocator to perform temporary allocations with,
+    /// or allocations that can potentially be cached.
+    a: Allocator,
+    /// Pixel cache that can be shared over decodings.
+    pixel_cache: std.ArrayListAlignedUnmanaged(u8, data_align) = .{},
+
+    pub fn deinit(self: *Decoder) void {
+        self.pixel_cache.deinit(self.a);
+        self.* = undefined;
+    }
+
+    pub fn decode(self: *Decoder, a: Allocator, source: *StreamSource) !ColorImage {
+        const fits = try read(self.a, source);
         defer fits.deinit();
         //  Handle the following cases:
         // - 3d data where the innermost dimension is 3 (for rgb)
@@ -822,7 +832,7 @@ pub const Decoder = struct {
         const hdu = &fits.hdus[0];
         switch (hdu.shape.len) {
             2 => if (hdu.keywords.get(Key.init("BAYERPAT"))) |bayerpat| {
-                return try decode2DBayer(a, fits, bayerpat.value);
+                return try self.decode2DBayer(a, fits, bayerpat.value);
             } else {
                 log.err("TODO: Implement 2D grayscale data decoding", .{});
                 unreachable;
@@ -838,7 +848,7 @@ pub const Decoder = struct {
         }
     }
 
-    fn decode2DBayer(a: Allocator, fits: Fits, pat_value: Value) !ColorImage{
+    fn decode2DBayer(self: *Decoder, a: Allocator, fits: Fits, pat_value: Value) !ColorImage{
         const pat = std.mem.trim(u8, pat_value.cast(.string) orelse return error.InvalidFitsImage, " ");
         const matrix = if (std.mem.eql(u8, pat, "RGGB"))
             filters.bayer_decoder.BayerMatrix.rg_gb
@@ -847,8 +857,6 @@ pub const Decoder = struct {
             return error.InvalidFitsImage;
         };
         const hdu = &fits.hdus[0];
-        const gs = try GrayscaleImage.alloc(a, hdu.shape[0], hdu.shape[1]);
-        defer gs.free(a);
 
         const bscale: f32 = blk: {
             if (hdu.keywords.get(Key.init("BSCALE"))) |bscale_value| {
@@ -872,37 +880,56 @@ pub const Decoder = struct {
             break :blk 1;
         };
 
-        {
-            const pixels = try fits.readDataAlloc(hdu, a);
-            defer pixels.free(a);
+        // Ensure that we have enough data for both the image data directly as well
+        // as the image data converted to floats, so that we can perform the conversion in-place.
+        const num_elements = hdu.numElements();
+        try self.pixel_cache.resize(self.a, @maximum(hdu.dataSize(), num_elements * @sizeOf(f32)));
+        const pixels = try fits.readData(hdu, self.pixel_cache.items);
+        const floating_pixels = std.mem.bytesAsSlice(f32, self.pixel_cache.items);
 
-            switch (pixels) {
-                .int8 => |px| for (px) |x, i| {
-                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
-                },
-                .int16 => |px| for (px) |x, i| {
-                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
-                },
-                .int32 => |px| for (px) |x, i| {
-                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
-                },
-                .int64 => |px| for (px) |x, i| {
-                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
-                },
-                .float32 => |px| for (px) |x, i| {
-                    gs.data[i] = x * bscale + bzero;
-                },
-                .float64 => |px| for (px) |x, i| {
-                    gs.data[i] = @floatCast(f32, x) * bscale + bzero;
-                },
-            }
+        // If the data size is larger than a float, we need to iterate from front to back.
+        // If the data size is smaller than a float, we need to iterate from back to front.
+
+        switch (pixels) {
+            .int8 => |px| {
+                var i: usize = num_elements;
+                while (i > 0) {
+                    i -= 1;
+                    floating_pixels[i] = @intToFloat(f32, px[i]) * bscale + bzero;
+                }
+            },
+            .int16 => |px| {
+                var i: usize = num_elements;
+                while (i > 0) {
+                    i -= 1;
+                    floating_pixels[i] = @intToFloat(f32, px[i]) * bscale + bzero;
+                }
+            },
+            .int32 => |px| for (px) |x, i| {
+                floating_pixels[i] = @intToFloat(f32, x) * bscale + bzero;
+            },
+            .float32 => |px| for (px) |x, i| {
+                floating_pixels[i] = x * bscale + bzero;
+            },
+            .int64 => |px| for (px) |x, i| {
+                floating_pixels[i] = @intToFloat(f32, x) * bscale + bzero;
+            },
+            .float64 => |px| for (px) |x, i| {
+                floating_pixels[i] = @floatCast(f32, x) * bscale + bzero;
+            },
         }
 
-        return try filters.bayer_decoder.apply(a, matrix, gs);
+        const image = GrayscaleImage{
+            .width = hdu.shape[0],
+            .height = hdu.shape[1],
+            .data = @ptrCast([*][1]f32, floating_pixels.ptr),
+        };
+
+        return try filters.bayer_decoder.apply(a, matrix, image);
     }
 };
 
-pub fn decoder() Decoder {
-    return .{};
+pub fn decoder(a: Allocator) Decoder {
+    return .{.a = a};
 }
 
