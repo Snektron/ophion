@@ -1,9 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
-const fits = @import("formats/fits.zig");
-const Image = @import("Image.zig");
+const formats= @import("formats.zig");
+const filters = @import("filters.zig");
 const log = std.log.scoped(.main);
+
+pub const log_level = .debug;
 
 const Options = struct {
     prog_name: []const u8,
@@ -77,43 +79,22 @@ pub fn main() !void {
 
     log.info("Loading '{s}'", .{ opts.input_path });
 
-    var image = blk: {
+    const image = blk: {
         const file = try std.fs.cwd().openFile(opts.input_path, .{});
         defer file.close();
 
-        var fits_reader = try fits.read(allocator, file.reader());
-        defer fits_reader.deinit();
-
-        if (fits_reader.header.format != .float64) {
-            // TODO: We probably want to convert this at some point
-            return error.InvalidFitsFormat;
-        }
-
-        if (fits_reader.header.shape.items.len != 2) {
-            return error.InvalidFitsFormat;
-        }
-
-        const pixels = try fits_reader.readDataAlloc(allocator);
-        break :blk Image{
-            .width = fits_reader.header.shape.items[0],
-            .height = fits_reader.header.shape.items[1],
-            .pixels = pixels.float64.ptr,
-        };
+        var source = std.io.StreamSource{.file = file};
+        break :blk try formats.fits.decoder().decode(allocator, &source);
     };
     defer image.free(allocator);
 
     log.info("Loaded image of {}x{} pixels", .{ image.width, image.height });
 
-    const file = try std.fs.cwd().createFile("balls.fits", .{});
-    defer file.close();
+    filters.normalize.apply(image);
 
-    _ = try fits.write(
-        file.writer(),
-        fits.Header{
-            .format = .float64,
-            .shape = .{.items = &.{ image.width, image.height }, .capacity = 2},
-            .extra = .{.primary = .{.is_simple = true}},
-        },
-        .{.float64 = image.data()},
-    );
+    log.info("Saving result", .{});
+    const file = try std.fs.cwd().createFile("out.ppm", .{});
+    defer file.close();
+    var source = std.io.StreamSource{.file = file};
+    try formats.ppm.encoder().encode(&source, image);
 }

@@ -1,23 +1,35 @@
 //! See https://fits.gsfc.nasa.gov/standard30/fits_standard30aa.pdf
-//! This file implements a stream-based parser for Fits. One the data is read
-//! for a particular HDU, it cannot be read again.
 
 const std = @import("std");
 const StreamSource = std.io.StreamSource;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const log = std.log.scoped(.fits);
 const assert = std.debug.assert;
+const ColorImage = @import("../image.zig").ColorImage;
+const GrayscaleImage = @import("../image.zig").GrayscaleImage;
+const filters = @import("../filters.zig");
 
-pub const block_bytes = 2880;
+/// Fits files are structures in blocks of 2880 bytes. Each block
+/// can be either a header, consisting of a number of keywords, or
+/// raw data.
+pub const bytes_per_block = 2880;
 
-/// A keyword is 80 bytes according to the spec.
-pub const keyword_bytes = 80;
-pub const keyword_name_max_len = 8;
+/// keywords are 80 bytes.
+pub const bytes_per_keyword = 80;
+/// keyword names are 8 bytes.
+pub const bytes_per_keyword_key = 8;
+
 const value_separator = "= ";
+/// Value separator, if present, has to be in bytes 9 and 10.
+const value_separator_offset = 8;
+/// Maximum number of bytes in a string value.
+/// Subtract 2 for the two quotes, which we don't store.
+const bytes_per_string = bytes_per_keyword - bytes_per_keyword_key - value_separator.len - 2;
 
-pub const KeywordBuffer = [keyword_bytes]u8;
+pub const KeywordBuffer = [bytes_per_keyword]u8;
 
-/// The alignment required for data storage.
+/// Minimum alignment for data bytes.
 pub const data_align = blk: {
     var max_align = 1;
     inline for (@typeInfo(Data).Union.fields) |field| {
@@ -26,14 +38,117 @@ pub const data_align = blk: {
     break :blk max_align;
 };
 
-fn alignToNextBlock(offset: anytype) @TypeOf(offset) {
-    if (offset % block_bytes == 0) {
-        return offset;
+pub const Key = struct {
+    pub const HashContext = struct {
+        pub fn hash(ctx: HashContext, key: Key) u64 {
+            _ = ctx;
+            return std.hash.Wyhash.hash(0, key.name());
+        }
+
+        pub fn eql(ctx: HashContext, a: Key, b: Key) bool {
+            _ = ctx;
+            return std.mem.eql(u8, a.name(), b.name());
+        }
+    };
+
+    key: [bytes_per_keyword_key]u8,
+
+    /// Initialize this key with a particular name.
+    /// Asserts that it is in the right format:
+    /// - min 1, max 8 characters.
+    /// - only consist of [A-Z0-9_-].
+    pub fn init(key_name: []const u8) Key {
+        assert(isValidName(key_name));
+        var result = Key{
+            .key = " ".* ** bytes_per_keyword_key,
+        };
+        std.mem.copy(u8, &result.key, key_name);
+        return result;
     }
 
-    return offset - offset % block_bytes + block_bytes;
-}
+    /// Return only the relevant part of the key.
+    pub fn name(self: *const Key) []const u8 {
+        return std.mem.sliceTo(&self.key, ' ');
+    }
 
+    /// Compare the name against a regular string
+    pub fn eql(self: Key, key_name: []const u8) bool {
+        return std.mem.eql(u8, self.name(), key_name);
+    }
+
+    /// Check if a particular string would be valid as a keyword name.
+    pub fn isValidName(key_name: []const u8) bool {
+        if (key_name.len == 0 or key_name.len > bytes_per_keyword_key) {
+            return false;
+        }
+
+        for (key_name) |c| {
+            switch (c) {
+                'A'...'Z', '0'...'9', '-', '_' => {},
+                else => return false,
+            }
+        }
+
+        return true;
+    }
+
+    pub fn format(self: Key, comptime fmt: []const u8, opts: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = opts;
+        try writer.writeAll(self.name());
+    }
+};
+
+pub const Value = union(enum) {
+    none,
+    string: []u8,
+    logical: bool,
+    int: i64,
+    float: f64,
+    complex_int: std.math.Complex(i64),
+    complex_float: std.math.Complex(f64),
+
+    /// Attempt to unwrap the Value as a particular type. Returns null if not the right type.
+    fn cast(self: Value, comptime tag: std.meta.Tag(Value)) ?std.meta.TagPayload(Value, tag) {
+        if (self != tag) {
+            return null;
+        }
+
+        return @field(self, @tagName(tag));
+    }
+
+    fn toFloat(self: Value) ?f64 {
+        return switch (self) {
+            .int => |value| @intToFloat(f32, value),
+            .float => |value| value,
+            else => null,
+        };
+    }
+
+    pub fn format(self: Value, comptime fmt: []const u8, opts: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = opts;
+        switch (self) {
+            .none => try writer.writeAll("(none)"),
+            .string => |value| try writer.writeAll(value),
+            .logical => |value| try writer.print("{}", .{value}),
+            .int => |value| try writer.print("{}", .{value}),
+            .float => |value| try writer.print("{d}", .{value}),
+            .complex_int => |value| try writer.print("{}", .{value}),
+            .complex_float => |value| try writer.print("{}", .{value}),
+        }
+    }
+};
+
+pub const ValueAndComment = struct {
+    value: Value,
+    comment: ?[]u8,
+};
+
+pub const KeywordMap = std.HashMapUnmanaged(Key, ValueAndComment, Key.HashContext, std.hash_map.default_max_load_percentage);
+
+/// Type of formats that can be present in a FITS file. Value equals the
+/// expected value of the BITPIX keyword.
 pub const Format = enum(i8) {
     int8 = 8,
     int16 = 16,
@@ -42,12 +157,25 @@ pub const Format = enum(i8) {
     float32 = -32,
     float64 = -64,
 
-    fn bitWidth(self: Format) u8 {
+    /// Return the number of bits making up an individual element in this format.
+    fn bitSize(self: Format) u8 {
         return std.math.absCast(@enumToInt(self));
     }
 
-    fn byteWidth(self: Format) u8 {
-        return self.bitWidth() / 8;
+    /// Return the number of bytes making up an individual data element in this format.
+    fn size(self: Format) u8 {
+        return @divExact(self.bitSize(), 8);
+    }
+
+    fn Type(comptime self: Format) type {
+        return switch (self) {
+            .int8 => i8,
+            .int16 => i16,
+            .int32 => i32,
+            .int64 => i64,
+            .float32 => f32,
+            .float64 => f64,
+        };
     }
 };
 
@@ -77,6 +205,7 @@ pub const Data = union(Format) {
     }
 };
 
+/// Known extensions, in the exact casing used in the value of the XTENSION keyword (minus padding).
 pub const Extension = enum {
     IMAGE,
     TABLE,
@@ -87,364 +216,335 @@ pub const Extension = enum {
     DUMP,
 };
 
-pub const HeaderExtra = union(enum) {
-    primary: struct { is_simple: bool },
-    extension: struct { extension: Extension },
-};
+/// A descriptor for a Header- and Data-Unit.
+pub const Hdu = struct {
+    pub const Kind = union(enum) {
+        primary,
+        extension: Extension,
+    };
 
-pub const Header = struct {
+    /// The type of HDU. Can be primary or (a specific) extension.
+    kind: Kind,
+    /// The data format.
     format: Format,
-    shape: std.ArrayListUnmanaged(u64),
-    extra: HeaderExtra,
+    /// The data shape, as decoded from the NAXIS fields, in order.
+    shape: []usize,
+    /// byte offset at which the data of this file starts.
+    /// The block is present only if dataBlocks() > 0.
+    data_offset: usize,
+    /// Additional keywords appearing in this HDU.
+    /// Memory is managed externally.
+    /// Padding should be done with spaces, and keys are left-justified as in the file itself.
+    /// Note: Does not and should not (when encoding) contain the following keywords,
+    /// as they are already present in other parts of this structure:
+    /// NAXIS
+    /// NAXISn
+    /// BITPIX
+    /// SIMPLE and XTENSION
+    keywords: KeywordMap,
 
-    /// Return the total number of elements in the data in this HDU.
-    pub fn size(self: Header) u64 {
-        var z: usize = 1;
-        for (self.shape.items) |axis| {
-            z *= axis;
+    /// Return the total number of elements in the data associated to this HDU,
+    /// in terms of the type of data present (see Format).
+    pub fn numElements(self: Hdu) usize {
+        if (self.shape.len == 0) {
+            return 0;
         }
-        return z;
+        var total: usize = 1;
+        for (self.shape) |axis| {
+            total *= axis;
+        }
+        return total;
     }
 
-    /// Return the number of *bytes* required to store the data in this HDU.
-    pub fn dataSize(self: Header) u64 {
-        return self.size() * self.format.byteWidth();
+    /// Return the number of data bytes associated to this HDU.
+    /// Note: This is the number of *actual* data bytes, without including padding.
+    pub fn dataSize(self: Hdu) usize {
+        return self.numElements() * self.format.size();
+    }
+
+    /// Return the number of data blocks that are associated with this HDU.
+    pub fn dataBlocks(self: Hdu) usize {
+        return std.math.divCeil(usize, self.dataSize(), bytes_per_block) catch unreachable;
+    }
+
+    fn dump(self: Hdu, writer: anytype) !void {
+        try writer.writeAll("{\n");
+        switch (self.kind) {
+            .primary => try writer.writeAll("    kind = primary,\n"),
+            .extension => |ext| try writer.print("    kind = extension {s},\n", .{@tagName(ext)}),
+        }
+        try writer.print("    format = {s},\n    shape = ", .{@tagName(self.format)});
+        for (self.shape) |axis, i| {
+            if (i != 0) {
+                try writer.writeByte('x');
+            }
+            try writer.print("{}", .{axis});
+        }
+        try writer.print(",\n    elements = {},\n    data bytes = {:.2},\n    data offset = {:.2},\n    blocks = {},\n", .{
+            self.numElements(),
+            std.fmt.fmtIntSizeBin(self.dataSize()),
+            std.fmt.fmtIntSizeBin(self.data_offset),
+            self.dataBlocks(),
+        });
+        var it = self.keywords.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.comment) |comment| {
+                try writer.print("    {s: <8} = {} / {s},\n", .{ entry.key_ptr.name(), entry.value_ptr.value, comment });
+            } else {
+                try writer.print("    {s: <8} = {},\n", .{ entry.key_ptr.name(), entry.value_ptr.value });
+            }
+        }
+        try writer.writeAll("  },\n");
     }
 };
 
-pub const FormatError = error {
-    CorruptKeyword,
-    IllegalKeywordBytes,
-    InvalidKeywordName,
-    InvalidKeywordType,
-    InvalidValue,
-    OutOfRangeInt,
-    InvalidFormat,
-    InvalidKeyword,
-    InvalidAxes,
-    UnexpectedDataEnd,
-    InvalidExtension,
+/// Represents a readable, immutable FITS handle.
+/// When reading a FITS file, the data is not loaded into memory until queried specifically.
+pub const Fits = struct {
+    /// Used for various allocations related to this fits file.
+    a: Allocator,
+    /// Arena allocator used for allocations that have a predetermined max size.
+    arena: ArenaAllocator.State,
+    /// The backing storage for this FITS file. It can be either in memory
+    /// or a file handle.
+    source: *StreamSource,
+    /// The list of HDUs present in this file. First index should be primary,
+    /// others extensions.
+    hdus: []Hdu,
+
+    pub fn deinit(self: Fits) void {
+        self.arena.promote(self.a).deinit();
+        for (self.hdus) |*hdu| {
+            hdu.keywords.deinit(self.a);
+        }
+        self.a.free(self.hdus);
+    }
+
+    pub fn dump(self: Fits, writer: anytype) !void {
+        try writer.writeAll("{\n");
+        for (self.hdus) |hdu, i| {
+            try writer.print("  hdu[{}] = ", .{i});
+            try hdu.dump(writer);
+        }
+        try writer.writeAll("}\n");
+    }
+
+    /// Read raw data fro mthe HDU into the buffer, which must be large enough to hold all the data.
+    /// Endianness is fixed to little, if required.
+    pub fn readData(self: Fits, hdu: *const Hdu, storage: []align(data_align) u8) !Data {
+        // Ensure that the pointer is one of ours.
+        assert(@ptrToInt(self.hdus.ptr) <= @ptrToInt(hdu) and @ptrToInt(hdu) < @ptrToInt(self.hdus.ptr + self.hdus.len));
+        try self.source.seekTo(hdu.data_offset);
+
+        // First read all the data into the buffer raw, and then swap them after if required.
+        var reader = self.source.reader();
+        const data_size = hdu.dataSize();
+        assert((try reader.readAll(storage)) == data_size); // Data present should be verified by the parsing part.
+
+        const buffer = storage[0..data_size];
+
+        inline for (std.meta.fields(Format)) |field| {
+            const format = @field(Format, field.name);
+            const IntType = std.meta.Int(.unsigned, comptime format.bitSize());
+            if (hdu.format == format) {
+                for (std.mem.bytesAsSlice(IntType, buffer)) |*x| {
+                    x.* = @byteSwap(IntType, x.*);
+                }
+
+                return @unionInit(Data, field.name, std.mem.bytesAsSlice(format.Type(), buffer));
+            }
+        }
+
+        unreachable;
+    }
+
+    pub fn readDataAlloc(self: Fits, hdu: *const Hdu, a: Allocator) !Data {
+        var storage = try a.allocWithOptions(u8, hdu.dataSize(), data_align, null);
+        errdefer a.free(storage);
+        return try self.readData(hdu, storage);
+    }
 };
 
-pub fn FitsReader(comptime Reader: type) type {
-    return struct {
-        const Self = @This();
+pub fn read(a: Allocator, source: *StreamSource) !Fits {
+    var hdus = std.ArrayList(Hdu).init(a);
+    defer hdus.deinit();
 
-        /// A general purpose allocator used for temporary allocations. Note that
-        /// this is only used for some small allocations during parsing of headers,
-        /// and is not used for any large data allocations, for which a custom allocator
-        /// is accepted instead.
-        gpa: Allocator,
-
-        /// A reader for the source we are fetching data from. Can be a memory buffer or a file.
-        reader: Reader,
-
-        /// The primary header for the current file.
-        header: Header,
-
-        /// User has already read the data for the current item.
-        data_read: bool = false,
-
-        pub fn deinit(self: *Self) void {
-            self.header.shape.deinit(self.gpa);
-            self.* = undefined;
+    errdefer {
+        for (hdus.items) |*hdu| {
+            hdu.keywords.deinit(a);
         }
+    }
 
-        /// Attempt to advance to the next HDU. Returns false if there is no none.
-        pub fn readNextHeader(self: *Self) !bool {
-            if (!self.data_read) {
-                // User didn't read data for this block, so skip over it to find the next HDU.
-                // TODO: Can merge below calls, we are currently at a block boundary.
-                // try self.reader.skipBytes(self.header.dataSize(), .{});
-                // try self.seekNextBlock();
-                const skip_size = alignToNextBlock(self.header.dataSize());
-                // We're just going to assume this file is less than an exabyte.
-                try self.reader.context.seekBy(@intCast(i64, skip_size));
-            }
+    const end = try source.getEndPos();
 
-            // TODO: Maybe there is a better method?
-            if ((try self.reader.context.getEndPos()) == (try self.reader.context.getPos())) {
-                return false;
-            }
+    var arena = ArenaAllocator.init(a);
+    errdefer arena.deinit();
 
-            try self.readHeader(.extension);
-            return true;
-        }
+    try hdus.append(try readHdu(a, arena.allocator(), source, .primary));
 
-        /// Read the data associated to the current header.
-        /// Asserts that the supplied storage buffer is the exact required size.
-        /// Note: This function can only be called once for the current header
-        pub fn readData(self: *Self, storage: []align(data_align) u8) !Data {
-            const data_size = self.header.dataSize();
-            assert(data_size == storage.len);
+    while ((try source.getPos()) < end) {
+        try hdus.append(try readHdu(a, arena.allocator(), source, .extension));
+    }
 
-            // First, read the data into the buffer raw, and then flip the endianness if required only after.
-            if ((try self.reader.readAll(storage)) != data_size) {
-                return error.UnexpectedDataEnd;
-            }
-            try self.seekNextBlock();
-
-            self.data_read = true;
-
-            inline for (@typeInfo(Data).Union.fields) |field| {
-                if (self.header.format == @field(Format, field.name)) {
-                    const T = std.meta.Child(field.field_type);
-                    const IntType = std.meta.Int(.unsigned, @bitSizeOf(T));
-                    if (@sizeOf(IntType) > 1) { // TODO: Only if required?
-                        for (std.mem.bytesAsSlice(IntType, storage)) |*x| {
-                            x.* = @byteSwap(IntType, x.*);
-                        }
-                    }
-
-                    return @unionInit(Data, field.name, std.mem.bytesAsSlice(T, storage));
-                }
-            }
-
-            unreachable;
-        }
-
-        pub fn readDataAlloc(self: *Self, allocator: Allocator) !Data {
-            var storage = try allocator.allocWithOptions(u8, self.header.dataSize(), data_align, null);
-            errdefer allocator.free(storage);
-            return try self.readData(storage);
-        }
-
-        fn seekNextBlock(self: *Self) !void {
-            const pos = try self.reader.context.getPos();
-            try self.reader.context.seekTo(alignToNextBlock(pos));
-        }
-
-        fn readHeader(self: *Self, kind: enum {primary, extension}) !void {
-            // Primary header constists of, in order:
-            // SIMPLE = T
-            // BITPIX
-            // NAXIS
-            // NAXISn
-            // ...
-            // END
-            // Extension header consists of, in order:
-            // XTENSION
-            // BITPIX
-            // NAXIS
-            // NAXISn
-            // PCOUNT
-            // GCOUNT
-            // ...
-            // END
-
-            var it = KeywordIterator{.reader = &self.reader};
-
-            switch (kind) {
-                .primary => {
-                    const is_simple = try it.expectAs("SIMPLE", .logical);
-                    if (!is_simple) {
-                        log.warn("File does not report itself as SIMPLE", .{});
-                    }
-
-                    self.header.extra = .{.primary = .{.is_simple = is_simple}};
-                },
-                .extension => {
-                    const name = try it.expectAs("XTENSION", .string);
-                    const extension = std.meta.stringToEnum(Extension, name) orelse return error.InvalidExtension;
-                    self.header.extra = .{.extension = .{.extension = extension}};
-                },
-            }
-
-            self.header.format = std.meta.intToEnum(Format, try it.expectAs("BITPIX", .int)) catch {
-                return error.InvalidFormat;
-            };
-
-            const naxis = try it.expectAs("NAXIS", .int);
-            if (naxis < 1 or naxis >= 999) {
-                log.err("File reports {} axes", .{naxis});
-                return error.InvalidAxes;
-            }
-
-            try self.header.shape.resize(self.gpa, @intCast(usize, naxis));
-
-            for (self.header.shape.items) |*axis, i| {
-                const kw = (try it.next()) orelse {
-                    log.err("Missing axis {}", .{i + 1});
-                    return error.InvalidAxes;
-                };
-
-                if (!std.mem.startsWith(u8, kw.name, "NAXIS")) {
-                    log.err("Expected keyword NAXIS{}, found keyword {s}", .{i + 1, kw.name});
-                    return error.InvalidAxes;
-                }
-
-                const num = std.fmt.parseInt(u64, kw.name["NAXIS".len..], 10) catch return error.InvalidAxes;
-                if (num != i + 1) {
-                    log.err("Expected axis {}, found axis {}", .{i + 1, num});
-                    return error.InvalidAxes;
-                }
-
-                const val = try kw.value.cast(.int);
-                axis.* = std.math.cast(usize, val) orelse {
-                    log.err("Invalid axis dimension {}", .{val});
-                    return error.InvalidAxes;
-                };
-            }
-
-            // Ignore other keywords for now.
-
-            try self.seekNextBlock();
-        }
-
-        const KeywordIterator = struct {
-            reader: *Reader,
-            buf: KeywordBuffer = undefined,
-
-            fn next(self: *KeywordIterator) !?Keyword {
-                const r = try self.reader.readAll(&self.buf);
-                if (r != keyword_bytes) {
-                    return error.CorruptKeyword;
-                }
-
-                const kw = try Keyword.read(&self.buf);
-                if (std.mem.eql(u8, kw.name, "END")) {
-                    return null;
-                }
-
-                return kw;
-            }
-
-            fn expect(self: *KeywordIterator, keyword_name: []const u8) !Value {
-                const kw = (try self.next()) orelse {
-                    log.err("Missing mandatory header {s}", .{keyword_name});
-                    return error.InvalidKeyword;
-                };
-                if (!std.mem.eql(u8, kw.name, keyword_name)) {
-                    log.err("Expected keyword {s}, found {s}", .{keyword_name, kw.name});
-                    return error.InvalidKeyword;
-                }
-                return kw.value;
-            }
-
-            fn expectAs(
-                self: *KeywordIterator,
-                keyword_name: []const u8,
-                comptime tag: std.meta.Tag(Value),
-            ) !std.meta.TagPayload(Value, tag) {
-                const value = try self.expect(keyword_name);
-                return try value.cast(tag);
-            }
-        };
+    return Fits{
+        .a = a,
+        .arena = arena.state,
+        .source = source,
+        .hdus = hdus.toOwnedSlice(),
     };
 }
 
-pub fn read(gpa: Allocator, reader: anytype) !FitsReader(@TypeOf(reader)) {
-    var self = FitsReader(@TypeOf(reader)){
-        .gpa = gpa,
-        .reader = reader,
-        .header = undefined,
+fn readHdu(gpa: Allocator, arena: Allocator, source: *StreamSource, kind: std.meta.Tag(Hdu.Kind)) !Hdu {
+    // Primary header constists of, in order:
+    // SIMPLE = T
+    // BITPIX
+    // NAXIS
+    // NAXISn
+    // ...
+    // END
+    // Extension header consists of, in order:
+    // XTENSION
+    // BITPIX
+    // NAXIS
+    // NAXISn
+    // PCOUNT
+    // GCOUNT
+    // ...
+    // END
+
+    const header_start = try source.getPos();
+    var hdu = Hdu{
+        .kind = undefined,
+        .format = undefined,
+        .shape = undefined,
+        .data_offset = undefined,
+        .keywords = KeywordMap{},
     };
+    errdefer hdu.keywords.deinit(gpa);
 
-    self.header.shape = .{};
-    try self.readHeader(.primary);
-    return self;
-}
+    var reader = source.reader();
+    var it = KeywordIterator{.reader = &reader};
 
-pub fn FitsWriter(comptime Writer: type) type {
-    return struct {
-        const Self = @This();
-
-        writer: Writer,
-
-        fn writeHeader(self: *Self, header: Header) !void {
-            switch (header.extra) {
-                .primary => |extra| try self.writeKeyword("SIMPLE", .{.logical = extra.is_simple}),
-                .extension => |extra| try self.writeKeyword("XTENSION", .{.string = @tagName(extra.extension)}),
+    switch (kind) {
+        .primary => {
+            const is_simple = try it.expectType("SIMPLE", .logical);
+            if (!is_simple) {
+                log.warn("File does not report itself as SIMPLE", .{});
             }
 
-            try self.writeKeyword("BITPIX", .{.int = @enumToInt(header.format)});
-            try self.writeKeyword("NAXIS", .{.int = @intCast(i64, header.shape.items.len)});
+            hdu.kind = .primary;
+        },
+        .extension => {
+            const name = try it.expectType("XTENSION", .string);
+            const extension = std.meta.stringToEnum(Extension, name) orelse return error.InvalidExtension;
+            hdu.kind = .{.extension = extension};
+        },
+    }
 
-            for (header.shape.items) |axis, i| {
-                var buf = [_]u8{' '} ** keyword_name_max_len;
-                _ = try std.fmt.bufPrint(&buf, "NAXIS{}", .{i + 1});
-                try self.writeKeyword(&buf, .{.int = @intCast(i64, axis)});
-            }
-
-            // TODO: GCOUNt, PCOUNT, ignore for now.
-            try self.writeKeyword("END", .none);
-            try self.padToBlockSize();
-        }
-
-        fn writeData(self: *Self, data: Data) !void {
-            // Note: need to write in different endianness
-
-            inline for (@typeInfo(Data).Union.fields) |field| {
-                if (data == @field(Format, field.name)) {
-                    const T = std.meta.Child(field.field_type);
-                    const IntType = std.meta.Int(.unsigned, @bitSizeOf(T));
-
-                    for (std.mem.bytesAsSlice(IntType, std.mem.sliceAsBytes(@field(data, field.name)))) |x| {
-                        try self.writer.writeIntBig(IntType, x);
-                    }
-                }
-            }
-            try self.padToBlockSize();
-        }
-
-        fn padToBlockSize(self: *Self) !void {
-            const pos = try self.writer.context.getPos();
-            const new_pos = alignToNextBlock(pos);
-            try self.writer.writeByteNTimes(' ', new_pos - pos);
-        }
-
-        fn writeKeyword(self: *Self, name: []const u8, value: Value) !void {
-            const kw = Keyword{.name = name, .value = value, .comment = null};
-            const buf = try kw.write();
-            try self.writer.writeAll(&buf);
-        }
-    };
-}
-
-pub fn write(writer: anytype, header: Header, data: Data) !FitsWriter(@TypeOf(writer)) {
-    assert(header.format == data);
-
-    var self = FitsWriter(@TypeOf(writer)){
-        .writer = writer,
+    hdu.format = std.meta.intToEnum(Format, try it.expectType("BITPIX", .int)) catch {
+        return error.InvalidFormat;
     };
 
-    try self.writeHeader(header);
-    try self.writeData(data);
-    return self;
-}
+    const naxis = try it.expectType("NAXIS", .int);
+    if (naxis < 0 or naxis >= 999) {
+        log.err("File reports {} axes", .{naxis});
+        return error.InvalidAxes;
+    }
 
-const Keyword = struct {
-    name: []const u8,
-    value: Value,
-    comment: ?[]const u8,
+    hdu.shape = try arena.alloc(usize, @intCast(usize, naxis));
 
-    fn dup(self: Keyword, allocator: Allocator) !Keyword {
-        const value_offset = self.name.len;
-        const comment_offset = value_offset + if (self.value == .string) self.value.string.len else 0;
-        const len = comment_offset + if (self.comment) |comment| comment.len else 0;
-
-        const buf = try allocator.alloc(u8, len);
-
-        const kw = Keyword{
-            .name = buf[0..value_offset],
-            .value = if (self.value == .string) .{.string = buf[value_offset..comment_offset]} else self.value,
-            .comment = if (self.comment != null) buf[comment_offset..] else null,
+    for (hdu.shape) |*axis, i| {
+        const kw = (try it.next()) orelse {
+            log.err("Missing axis {}", .{i + 1});
+            return error.InvalidAxes;
         };
 
-        std.mem.copy(u8, kw.name, self.name);
-        if (kw.value == .string) std.mem.copy(u8, kw.string, self.value.string);
-        if (kw.comment) |comment| std.mem.copy(u8, comment, self.comment.?);
+        if (!std.mem.startsWith(u8, kw.key.name(), "NAXIS")) {
+            log.err("Expected keyword NAXIS{}, found keyword {s}", .{i + 1, kw.key});
+            return error.InvalidAxes;
+        }
+
+        const num = std.fmt.parseInt(u64, kw.key.name()["NAXIS".len..], 10) catch return error.InvalidAxes;
+        if (num != i + 1) {
+            log.err("Expected axis {}, found axis {}", .{i + 1, num});
+            return error.InvalidAxes;
+        }
+
+        const val = kw.value.cast(.int) orelse return error.InvalidKeywordType;
+        axis.* = std.math.cast(usize, val) orelse {
+            log.err("Invalid axis dimension {}", .{val});
+            return error.InvalidAxes;
+        };
+    }
+
+    while (try it.next()) |kw| {
+        const value = switch (kw.value) {
+            .string => |str| blk: {
+                break :blk Value{.string = try arena.dupe(u8, str)};
+            },
+            else => |value| value,
+        };
+        const comment = if (kw.comment) |text| try arena.dupe(u8, std.mem.trim(u8, text, " ")) else null;
+        try hdu.keywords.put(gpa, kw.key, .{
+            .value = value,
+            .comment = comment,
+        });
+    }
+
+    const header_end = try source.getPos();
+    const header_blocks = std.math.divCeil(usize, header_end - header_start, bytes_per_block) catch unreachable;
+    const data_start = header_blocks * bytes_per_block + header_start;
+    hdu.data_offset = data_start;
+
+    try source.seekTo(data_start + hdu.dataBlocks() * bytes_per_block);
+
+    return hdu;
+}
+
+const KeywordIterator = struct {
+    reader: *StreamSource.Reader,
+    buf: KeywordBuffer = undefined,
+
+    fn next(self: *KeywordIterator) !?Keyword {
+        const r = try self.reader.readAll(&self.buf);
+        if (r != bytes_per_keyword) {
+            return error.CorruptKeyword;
+        }
+
+        const kw = try Keyword.read(&self.buf);
+        if (kw.key.eql("END")) {
+            return null;
+        }
 
         return kw;
     }
 
-    /// Note: Only required for a keyword allocated by dup().
-    fn deinit(self: *Keyword, allocator: Allocator) void {
-        const value_len = if (self.value == .string) self.value.string.len else 0;
-        const comment_len = if (self.comment) |comment| comment.len else 0;
-        allocator.free(self.name.ptr[self.name.len + value_len + comment_len]);
-        self.* = undefined;
+    fn expect(self: *KeywordIterator, key_name: []const u8) !Value {
+        const kw = (try self.next()) orelse {
+            log.err("Missing mandatory keyword {s}", .{key_name});
+            return error.InvalidKeyword;
+        };
+        if (!kw.key.eql(key_name)) {
+            log.err("Expected keyword {s}, found {s}", .{key_name, kw.key});
+            return error.InvalidKeyword;
+        }
+        return kw.value;
     }
+
+    fn expectType(
+        self: *KeywordIterator,
+        keyword_name: []const u8,
+        comptime tag: std.meta.Tag(Value),
+    ) !std.meta.TagPayload(Value, tag) {
+        const value = try self.expect(keyword_name);
+        return value.cast(tag) orelse error.InvalidKeywordType;
+    }
+};
+
+const Keyword = struct {
+    key: Key,
+    value: Value,
+    comment: ?[]const u8,
 
     fn read(kw: *KeywordBuffer) !Keyword {
         for (kw) |c| {
@@ -454,50 +554,46 @@ const Keyword = struct {
             }
         }
 
-        var i: usize = 0;
-        while (i < keyword_name_max_len) : (i += 1) {
-            switch (kw[i]) {
-                'A'...'Z' => {},
-                '0'...'9', '-', '_' => if (i == 0) return error.InvalidKeywordName,
-                ' ' => break,
-                else => return error.InvalidKeywordName,
+        const lhs = kw[0..bytes_per_keyword_key];
+        const name = std.mem.sliceTo(lhs, ' ');
+
+        if (!Key.isValidName(name)) {
+            return error.InvalidKeywordName;
+        }
+
+        for (lhs[name.len..]) |c| {
+            if (c != ' ') {
+                return error.InvalidKeywordName; // Invalid justification characters
             }
         }
 
-        const name = kw[0..i];
-
-        while (i < keyword_name_max_len) : (i += 1) {
-            switch (kw[i]) {
-                ' ' => {},
-                else => return error.InvalidKeywordName,
-            }
-        }
-
-        if (!std.mem.startsWith(u8, kw[i..], value_separator)) {
+        const rhs = kw[value_separator_offset..];
+        if (!std.mem.startsWith(u8, rhs, value_separator)) {
             // No value, but may still contain some text. Just put this under 'comment'.
             return Keyword{
-                .name = name,
+                .key = Key.init(name),
                 .value = .none,
-                .comment = kw[i..]
+                .comment = rhs,
             };
         }
 
         // Now follows a value and optionally a comment.
-        i = keyword_name_max_len + value_separator.len;
+        var i = bytes_per_keyword_key + value_separator.len;
 
         // Skip over any whitespace. Everything will be parsed as free-form value, and we
         // are going to assume that any justification is done with spaces.
-        while (i < keyword_bytes) : (i += 1) {
+        while (i < bytes_per_keyword) : (i += 1) {
             if (kw[i] != ' ') break;
         } else {
             // No value, no comment
             return Keyword {
-                .name = name,
+                .key = Key.init(name),
                 .value = .none,
                 .comment = null,
             };
         }
 
+        var value_parser = ValueParser{.kw = kw, .index = i};
         const value = switch (kw[i]) {
             ' ' => unreachable,
             '/' => Value.none,
@@ -505,305 +601,308 @@ const Keyword = struct {
                 defer i += 1;
                 break :blk .{.logical = kw[i] == 'T'};
             },
-            '\'' => try readString(kw, &i),
-            '(' => try readComplex(kw, &i),
-            '+', '-', '0'...'9' => try readNumber(kw, &i),
+            '\'' => try value_parser.readString(),
+            '(' => try value_parser.readComplex(),
+            '+', '-', '0'...'9' => try value_parser.readNumber(),
             else => return error.InvalidValue,
         };
 
-        skipSpaces(kw, &i);
-        const comment = if (i != keyword_bytes and kw[i] == '/') kw[i + 1..] else null;
+        value_parser.skipSpaces();
+        i = value_parser.index;
+        const comment = if (i != bytes_per_keyword and kw[i] == '/') kw[i + 1..] else null;
         return Keyword{
-            .name = name,
+            .key = Key.init(name),
             .value = value,
             .comment = comment,
         };
     }
+};
 
-    fn write(self: Keyword) !KeywordBuffer {
-        var buf: KeywordBuffer = [_]u8{' '} ** keyword_bytes;
+const ValueParser = struct {
+    kw: *KeywordBuffer,
+    index: usize,
 
-        // First, the name
-        assert(self.name.len <= keyword_name_max_len);
-        std.mem.copy(u8, &buf, self.name);
+    fn skipSpaces(self: *ValueParser) void {
+        while (self.index < bytes_per_keyword) : (self.index += 1) {
+            if (self.kw[self.index] != ' ') break;
+        }
+    }
 
-        if (self.value != .none) {
-            std.mem.copy(u8, buf[keyword_name_max_len..], value_separator);
+    fn readComplex(self: *ValueParser) !Value {
+        assert(self.kw[self.index] == '(');
+        self.index += 1;
+        self.skipSpaces();
+
+        const a = try self.readNumber();
+        self.skipSpaces();
+        if (self.index == bytes_per_keyword or self.kw[self.index] != ',') {
+            return error.InvalidValue;
         }
 
-        _ = switch (self.value) {
-            .none => 0,
-            .string => |str| try writeString(&buf, str),
-            .logical => |val| writeLogical(&buf, val),
-            .int => |int| writeInt(&buf, int),
-            else => unreachable, // TODO
+        self.index += 1;
+        self.skipSpaces();
+        const b = try self.readNumber();
+        self.skipSpaces();
+        if (self.index == bytes_per_keyword or self.kw[self.index] != ')') {
+            return error.InvalidValue;
+        }
+        self.index += 1;
+
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
+            return error.InvalidValue;
+        }
+
+        return switch (a) {
+            .int => Value{.complex_int = std.math.Complex(i64).init(a.int, b.int)},
+            .float => Value{.complex_float = std.math.Complex(f64).init(a.float, b.float)},
+            else => unreachable,
+        };
+    }
+
+    fn readNumber(self: *ValueParser) !Value {
+        const start = self.index;
+
+        var state: enum {
+            start,
+            sign,
+            dot,
+            int_digits,
+            fraction_digits,
+            exp,
+            exp_sign,
+            exp_digits,
+        } = .start;
+
+        var maybe_exp_index: ?usize = null;
+        while (self.index < bytes_per_keyword) : (self.index += 1) {
+            const c = self.kw[self.index];
+            switch (state) {
+                .start => switch (c) {
+                    '+', '-' => state = .sign,
+                    '0'...'9' => state = .int_digits,
+                    else => return error.InvalidValue,
+                },
+                .sign => switch (c) {
+                    '.' => state = .dot,
+                    '0'...'9' => state = .int_digits,
+                    else => return error.InvalidValue,
+                },
+                .dot => switch (c) {
+                    '0'...'9' => state = .fraction_digits,
+                    else => break,
+                },
+                .int_digits => switch (c) {
+                    '0'...'9' => {},
+                    '.' => state = .fraction_digits,
+                    'E', 'D' => {
+                        maybe_exp_index = self.index;
+                        state = .exp;
+                    },
+                    else => break,
+                },
+                .fraction_digits => switch (c) {
+                    '0'...'9' => {},
+                    'E', 'D' => {
+                        maybe_exp_index = self.index;
+                        state = .exp;
+                    },
+                    else => break,
+                },
+                .exp => switch (c) {
+                    '+', '-' => state = .exp_sign,
+                    '0'...'9' => state = .exp_digits,
+                    else => return error.InvalidValue,
+                },
+                .exp_sign, .exp_digits => switch (c) {
+                    '0'...'9' => state = .exp_digits,
+                    else => break,
+                },
+            }
+        }
+
+        const text = self.kw[start..self.index];
+
+        switch (state) {
+            .start, .sign, .exp, .exp_sign => return error.InvalidValue,
+            .int_digits => {
+                const val = std.fmt.parseInt(i64, text, 10) catch |err| switch (err) {
+                    error.InvalidCharacter => unreachable,
+                    error.Overflow => return error.OutOfRangeInt,
+                };
+                return Value{.int = val};
+            },
+            .dot, .fraction_digits, .exp_digits => {
+                if (maybe_exp_index) |exp_index| {
+                    // Cheekily replace the 'D' by an 'E' temporarily so std.fmt.parseFloat can parse it.
+                    const exp = self.kw[exp_index];
+                    defer self.kw[exp_index] = exp;
+
+                    self.kw[exp_index] = 'E';
+                    const val = std.fmt.parseFloat(f64, text) catch unreachable;
+                    return Value{.float = val};
+                } else {
+                    const val = std.fmt.parseFloat(f64, text) catch unreachable;
+                    return Value{.float = val};
+                }
+            },
+        }
+    }
+
+    fn readString(self: *ValueParser) !Value {
+        const start = self.index;
+        assert(self.kw[start] == '\'');
+
+        var state: enum {
+            text,
+            spaces,
+            quote,
+        } = .text;
+
+        self.index += 1;
+        var write_index = start;
+        var end = write_index;
+        while (self.index < bytes_per_keyword) : (self.index += 1) {
+            const c = self.kw[self.index];
+
+            switch (state) {
+                .text => switch (c) {
+                    '\'' => state = .quote,
+                    ' ' => {
+                        self.kw[write_index] = c;
+                        write_index += 1;
+                        state = .spaces;
+                    },
+                    else => {
+                        self.kw[write_index] = c;
+                        write_index += 1;
+                        end = write_index;
+                    },
+                },
+                .spaces => switch (c) {
+                    ' ' => {
+                        self.kw[write_index] = c;
+                        write_index += 1;
+                    },
+                    '\'' => state = .quote,
+                    else => {
+                        self.kw[write_index] = c;
+                        write_index += 1;
+                        end = write_index;
+                        state = .text;
+                    },
+                },
+                .quote => switch (c) {
+                    '\'' => {
+                        self.kw[write_index] = c;
+                        write_index += 1;
+                        end = write_index;
+                        state = .text;
+                    },
+                    else => break,
+                },
+            }
+        } else {
+            if (state != .quote)
+                return error.UnterminatedString;
+        }
+
+        return Value{.string = self.kw[start..end]};
+    }
+};
+
+pub const Decoder = struct {
+    pub fn decode(self: Decoder, a: Allocator, source: *StreamSource) !ColorImage {
+        _ = self;
+        const fits = try read(a, source);
+        defer fits.deinit();
+        //  Handle the following cases:
+        // - 3d data where the innermost dimension is 3 (for rgb)
+        // - 2d data with no bayer matrix info (read as grayscale)
+        // - 2d data with bayer matrix info (decode bayer matrix into rgb)
+        const hdu = &fits.hdus[0];
+        switch (hdu.shape.len) {
+            2 => if (hdu.keywords.get(Key.init("BAYERPAT"))) |bayerpat| {
+                return try decode2DBayer(a, fits, bayerpat.value);
+            } else {
+                log.err("TODO: Implement 2D grayscale data decoding", .{});
+                unreachable;
+            },
+            3 => {
+                log.err("TODO: Implement 3D data decoding", .{});
+                unreachable;
+            },
+            else => {
+                log.err("fits image has {} dimensions, expected 2 or 3", .{hdu.shape.len});
+                return error.InvalidFitsImage;
+            },
+        }
+    }
+
+    fn decode2DBayer(a: Allocator, fits: Fits, pat_value: Value) !ColorImage{
+        const pat = std.mem.trim(u8, pat_value.cast(.string) orelse return error.InvalidFitsImage, " ");
+        const matrix = if (std.mem.eql(u8, pat, "RGGB"))
+            filters.bayer_decoder.BayerMatrix.rg_gb
+        else {
+            log.err("Unknown bayer matrix {s}", .{pat});
+            return error.InvalidFitsImage;
+        };
+        const hdu = &fits.hdus[0];
+        const gs = try GrayscaleImage.alloc(a, hdu.shape[0], hdu.shape[1]);
+        defer gs.free(a);
+
+        const bscale: f32 = blk: {
+            if (hdu.keywords.get(Key.init("BSCALE"))) |bscale_value| {
+                const value = bscale_value.value.toFloat() orelse {
+                    log.warn("BSCALE {} not convertable to float, falling back to 1", .{bscale_value.value});
+                    break :blk 1;
+                };
+                break :blk @floatCast(f32, value);
+            }
+            break :blk 1;
         };
 
-        // Just ignore the comment for now
-        return buf;
-    }
-};
-
-const Value = union(enum) {
-    none,
-    // Note: Note quotes, unescaped
-    string: []const u8,
-    logical: bool,
-    int: i64,
-    float: f64,
-    complex_int: std.math.Complex(i64),
-    complex_float: std.math.Complex(f64),
-
-    fn cast(self: Value, comptime tag: std.meta.Tag(Value)) !std.meta.TagPayload(Value, tag) {
-        if (self != tag) {
-            return error.InvalidKeywordType;
-        }
-
-        return @field(self, @tagName(tag));
-    }
-};
-
-fn readComplex(kw: *KeywordBuffer, i: *usize) !Value {
-    var j = i.*;
-    assert(kw[j] == '(');
-    j += 1;
-
-    skipSpaces(kw, &j);
-    const a = try readNumber(kw, &j);
-    skipSpaces(kw, &j);
-    if (j == keyword_bytes or kw[j] != ',') {
-        return error.InvalidValue;
-    }
-
-    j += 1;
-    skipSpaces(kw, &j);
-    const b = try readNumber(kw, &j);
-    skipSpaces(kw, &j);
-    if (j == keyword_bytes or kw[j] != ')') {
-        return error.InvalidValue;
-    }
-    i.* = j + 1;
-
-    if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
-        return error.InvalidValue;
-    }
-
-    return switch (a) {
-        .int => Value{.complex_int = std.math.Complex(i64).init(a.int, b.int)},
-        .float => Value{.complex_float = std.math.Complex(f64).init(a.float, b.float)},
-        else => unreachable,
-    };
-}
-
-fn skipSpaces(kw: *KeywordBuffer, i: *usize) void {
-    var j = i.*;
-    while (j < keyword_bytes) : (j += 1) {
-        if (kw[j] != ' ') break;
-    }
-
-    i.* = j;
-}
-
-fn readNumber(kw: *KeywordBuffer, i: *usize) !Value {
-    const start = i.*;
-
-    var state: enum {
-        start,
-        sign,
-        dot,
-        int_digits,
-        fraction_digits,
-        exp,
-        exp_sign,
-        exp_digits,
-    } = .start;
-
-    var maybe_exp_index: ?usize = null;
-    var j = start;
-    while (j < keyword_bytes) : (j += 1) {
-        const c = kw[j];
-        switch (state) {
-            .start => switch (c) {
-                '+', '-' => state = .sign,
-                '0'...'9' => state = .int_digits,
-                else => return error.InvalidValue,
-            },
-            .sign => switch (c) {
-                '.' => state = .dot,
-                '0'...'9' => state = .int_digits,
-                else => return error.InvalidValue,
-            },
-            .dot => switch (c) {
-                '0'...'9' => state = .fraction_digits,
-                else => break,
-            },
-            .int_digits => switch (c) {
-                '0'...'9' => {},
-                '.' => state = .fraction_digits,
-                'E', 'D' => {
-                    maybe_exp_index = j;
-                    state = .exp;
-                },
-                else => break,
-            },
-            .fraction_digits => switch (c) {
-                '0'...'9' => {},
-                'E', 'D' => {
-                    maybe_exp_index = j;
-                    state = .exp;
-                },
-                else => break,
-            },
-            .exp => switch (c) {
-                '+', '-' => state = .exp_sign,
-                '0'...'9' => state = .exp_digits,
-                else => return error.InvalidValue,
-            },
-            .exp_sign, .exp_digits => switch (c) {
-                '0'...'9' => state = .exp_digits,
-                else => break,
-            },
-        }
-    }
-
-    const text = kw[start..j];
-    i.* = j;
-
-    switch (state) {
-        .start, .sign, .exp, .exp_sign => return error.InvalidValue,
-        .int_digits => {
-            const val = std.fmt.parseInt(i64, text, 10) catch |err| switch (err) {
-                error.InvalidCharacter => unreachable,
-                error.Overflow => return error.OutOfRangeInt,
-            };
-            return Value{.int = val};
-        },
-        .dot, .fraction_digits, .exp_digits => {
-            if (maybe_exp_index) |exp_index| {
-                // Cheekily replace the 'D' by an 'E' temporarily so std.fmt.parseFloat can parse it.
-                const exp = kw[exp_index];
-                defer kw[exp_index] = exp;
-
-                kw[exp_index] = 'E';
-                const val = std.fmt.parseFloat(f64, text) catch unreachable;
-                return Value{.float = val};
-            } else {
-                const val = std.fmt.parseFloat(f64, text) catch unreachable;
-                return Value{.float = val};
+        const bzero: f32 = blk: {
+            if (hdu.keywords.get(Key.init("BZERO"))) |bzero_value| {
+                const value = bzero_value.value.toFloat() orelse {
+                    log.warn("BZERO {} not convertable to float, falling back to 0", .{bzero_value.value});
+                    break :blk 0;
+                };
+                break :blk @floatCast(f32, value);
             }
-        },
-    }
-}
+            break :blk 1;
+        };
 
-fn writeInt(kw: *KeywordBuffer, value: i64) usize {
-    const start = 10;
-    const end = 30;
-    if (value < 0) {
-        _ = std.fmt.bufPrint(kw[start..end], "{: >20}", .{value}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(kw[start..end], "{: >20}", .{@intCast(u64, value)}) catch unreachable;
-    }
-    return end;
-}
+        {
+            const pixels = try fits.readDataAlloc(hdu, a);
+            defer pixels.free(a);
 
-fn writeLogical(kw: *KeywordBuffer, value: bool) usize {
-    const start = 29;
-    kw[start] = if (value) 'T' else 'F';
-    return start + 1;
-}
-
-fn readString(kw: *KeywordBuffer, i: *usize) !Value {
-    const start = i.*;
-    assert(kw[start] == '\'');
-
-    var state: enum {
-        start,
-        text,
-        spaces,
-        quote,
-    } = .start;
-
-    var j = start + 1;
-    var write_index = start;
-    var last_non_space = write_index;
-    while (j < keyword_bytes) : (j += 1) {
-        const c = kw[j];
-        switch (state) {
-            .start => switch (c) {
-                '\'' => {
-                    state = .quote;
-                    continue;
+            switch (pixels) {
+                .int8 => |px| for (px) |x, i| {
+                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
                 },
-                else => state = .text,
-            },
-            .text => switch (c) {
-                ' ' => {
-                    state = .spaces;
-                    kw[write_index] = c;
-                    write_index += 1;
+                .int16 => |px| for (px) |x, i| {
+                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
                 },
-                '\'' => state = .quote,
-                else => {},
-            },
-            .spaces => switch (c) {
-                ' ' => {
-                    kw[write_index] = c;
-                    write_index += 1;
+                .int32 => |px| for (px) |x, i| {
+                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
                 },
-                '\'' => state = .quote,
-                else => state = .text,
-            },
-            .quote => switch (c) {
-                '\'' => state = .text,
-                else => break,
-            },
+                .int64 => |px| for (px) |x, i| {
+                    gs.data[i] = @intToFloat(f32, x) * bscale + bzero;
+                },
+                .float32 => |px| for (px) |x, i| {
+                    gs.data[i] = x * bscale + bzero;
+                },
+                .float64 => |px| for (px) |x, i| {
+                    gs.data[i] = @floatCast(f32, x) * bscale + bzero;
+                },
+            }
         }
 
-        kw[write_index] = c;
-        write_index += 1;
-        last_non_space = write_index;
-    } else {
-        return error.UnterminatedString;
+        return try filters.bayer_decoder.apply(a, matrix, gs);
     }
+};
 
-    i.* = j;
-
-    return Value{.string = kw[start..last_non_space]};
+pub fn decoder() Decoder {
+    return .{};
 }
 
-fn writeString(kw: *KeywordBuffer, str: []const u8) !usize {
-    const start = 10;
-
-    var j: usize = start;
-    kw[start] = '\'';
-    j += 1;
-    for (str) |c| {
-        switch (c) {
-            '\'' => {
-                if (j + 1 >= kw.len) {
-                    return error.NoSpaceLeft;
-                }
-
-                kw[j] = '\'';
-                kw[j + 1] = '\'';
-                j += 2;
-            },
-            ' '...'&', '('...'~' => {
-                if (j >= kw.len) {
-                    return error.NoSpaceLeft;
-                }
-
-                kw[j] = c;
-                j += 1;
-            },
-            else => return error.InvalidCharacter,
-        }
-    }
-
-    if (j >= kw.len) {
-        return error.NoSpaceLeft;
-    }
-
-    kw[j] = '\'';
-    return j + 1;
-}
