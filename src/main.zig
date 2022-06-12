@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
-const formats= @import("formats.zig");
+const formats = @import("formats.zig");
 const filters = @import("filters.zig");
 const log = std.log.scoped(.main);
 
@@ -80,23 +80,17 @@ pub fn main() !void {
     log.info("Loading '{s}'", .{ opts.input_path });
 
     const image = blk: {
-        const file = try std.fs.cwd().openFile(opts.input_path, .{});
-        defer file.close();
-
-        var source = std.io.StreamSource{.file = file};
         var decoder = formats.fits.decoder(allocator);
         defer decoder.deinit();
-        break :blk try decoder.decode(allocator, &source);
+        break :blk try decoder.decoder().decodePath(allocator, opts.input_path);
     };
+
     defer image.free(allocator);
 
-    log.info("Loaded image of {}x{} pixels", .{ image.width, image.height });
+    log.info("Loaded image of {}x{} pixels", .{ image.descriptor.width, image.descriptor.height });
 
     filters.normalize.apply(image);
 
     log.info("Saving result", .{});
-    const file = try std.fs.cwd().createFile("out.ppm", .{});
-    defer file.close();
-    var source = std.io.StreamSource{.file = file};
-    try formats.ppm.encoder().encode(&source, image);
+    try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image);
 }

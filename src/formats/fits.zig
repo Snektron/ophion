@@ -6,9 +6,9 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const log = std.log.scoped(.fits);
 const assert = std.debug.assert;
-const ColorImage = @import("../image.zig").ColorImage;
-const GrayscaleImage = @import("../image.zig").GrayscaleImage;
+const Image = @import("../Image.zig");
 const filters = @import("../filters.zig");
+const formats = @import("../formats.zig");
 
 /// Fits files are structures in blocks of 2880 bytes. Each block
 /// can be either a header, consisting of a number of keywords, or
@@ -810,20 +810,38 @@ const ValueParser = struct {
     }
 };
 
-pub const Decoder = struct {
+pub const FitsDecoder = struct {
+    pub const Error = StreamSource.ReadError || StreamSource.GetSeekPosError || error{InvalidFitsImage, OutOfMemory};
+    pub const Decoder = formats.Decoder(*FitsDecoder, Error, decode);
+
     /// Allocator to perform temporary allocations with,
     /// or allocations that can potentially be cached.
     a: Allocator,
     /// Pixel cache that can be shared over decodings.
     pixel_cache: std.ArrayListAlignedUnmanaged(u8, data_align) = .{},
 
-    pub fn deinit(self: *Decoder) void {
+    pub fn deinit(self: *FitsDecoder) void {
         self.pixel_cache.deinit(self.a);
         self.* = undefined;
     }
 
-    pub fn decode(self: *Decoder, a: Allocator, source: *StreamSource) !ColorImage {
-        const fits = try read(self.a, source);
+    pub fn decode(self: *FitsDecoder, a: Allocator, source: *StreamSource) Error!Image {
+        const fits = read(self.a, source) catch |err| switch (err) {
+            error.InvalidAxes,
+            error.InvalidFormat,
+            error.InvalidExtension,
+            error.InvalidKeywordType,
+            error.InvalidKeyword,
+            error.InvalidKeywordName,
+            error.IllegalKeywordBytes,
+            error.OutOfRangeInt,
+            error.InvalidValue,
+            error.UnterminatedString,
+            error.CorruptKeyword,
+            => return error.InvalidFitsImage,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => |others| return others,
+        };
         defer fits.deinit();
         //  Handle the following cases:
         // - 3d data where the innermost dimension is 3 (for rgb)
@@ -848,7 +866,7 @@ pub const Decoder = struct {
         }
     }
 
-    fn decode2DBayer(self: *Decoder, a: Allocator, fits: Fits, pat_value: Value) !ColorImage{
+    fn decode2DBayer(self: *FitsDecoder, a: Allocator, fits: Fits, pat_value: Value) !Image{
         const pat = std.mem.trim(u8, pat_value.cast(.string) orelse return error.InvalidFitsImage, " ");
         const matrix = if (std.mem.eql(u8, pat, "RGGB"))
             filters.bayer_decoder.BayerMatrix.rg_gb
@@ -919,17 +937,24 @@ pub const Decoder = struct {
             },
         }
 
-        const image = GrayscaleImage{
-            .width = hdu.shape[0],
-            .height = hdu.shape[1],
-            .data = @ptrCast([*][1]f32, floating_pixels.ptr),
+        const image = Image{
+            .descriptor = .{
+                .width = hdu.shape[0],
+                .height = hdu.shape[1],
+                .components = 1,
+            },
+            .pixels = floating_pixels.ptr,
         };
 
         return try filters.bayer_decoder.apply(a, matrix, image);
     }
+
+    pub fn decoder(self: *FitsDecoder) Decoder {
+        return Decoder{.context = self};
+    }
 };
 
-pub fn decoder(a: Allocator) Decoder {
+pub fn decoder(a: Allocator) FitsDecoder {
     return .{.a = a};
 }
 
