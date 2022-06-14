@@ -38,7 +38,7 @@ pub fn Encoder(
 pub fn Decoder(
     comptime Context: type,
     comptime DecodeError: type,
-    comptime decodeFn: fn(context: Context, a: Allocator, source: *StreamSource) DecodeError!Image,
+    comptime decodeFn: fn(context: Context, image: *Image.Managed, source: *StreamSource) DecodeError!void,
 ) type {
     return struct {
         const Self = @This();
@@ -46,19 +46,19 @@ pub fn Decoder(
 
         context: Context,
 
-        pub fn decode(self: Self, a: Allocator, source: *StreamSource) DecodeError!Image {
-            return decodeFn(self.context, a, source);
+        pub fn decode(self: Self, image: *Image.Managed, source: *StreamSource) DecodeError!void {
+            return decodeFn(self.context, image, source);
         }
 
-        pub fn decodeFile(self: Self, a: Allocator, file: File) !Image {
+        pub fn decodeFile(self: Self, image: *Image.Managed, file: File) !void {
             var ss = StreamSource{.file = file};
-            return try self.decode(a, &ss);
+            return try self.decode(image, &ss);
         }
 
-        pub fn decodePath(self: Self, a: Allocator, path: []const u8) !Image {
+        pub fn decodePath(self: Self, image: *Image.Managed, path: []const u8) !void {
             const file = try std.fs.cwd().openFile(path, .{});
             defer file.close();
-            return try self.decodeFile(a, file);
+            return try self.decodeFile(image, file);
         }
     };
 }

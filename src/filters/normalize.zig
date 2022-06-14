@@ -1,4 +1,5 @@
 //! This filter normalizes the value in the image to a scale from 0-1.
+//! Filter operates in place.
 const std = @import("std");
 const Image = @import("../Image.zig");
 

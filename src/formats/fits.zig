@@ -825,7 +825,7 @@ pub const FitsDecoder = struct {
         self.* = undefined;
     }
 
-    pub fn decode(self: *FitsDecoder, a: Allocator, source: *StreamSource) Error!Image {
+    pub fn decode(self: *FitsDecoder, image: *Image.Managed, source: *StreamSource) Error!void {
         const fits = read(self.a, source) catch |err| switch (err) {
             error.InvalidAxes,
             error.InvalidFormat,
@@ -850,7 +850,7 @@ pub const FitsDecoder = struct {
         const hdu = &fits.hdus[0];
         switch (hdu.shape.len) {
             2 => if (hdu.keywords.get(Key.init("BAYERPAT"))) |bayerpat| {
-                return try self.decode2DBayer(a, fits, bayerpat.value);
+                return try self.decode2DBayer(image, fits, bayerpat.value);
             } else {
                 log.err("TODO: Implement 2D grayscale data decoding", .{});
                 unreachable;
@@ -866,7 +866,7 @@ pub const FitsDecoder = struct {
         }
     }
 
-    fn decode2DBayer(self: *FitsDecoder, a: Allocator, fits: Fits, pat_value: Value) !Image{
+    fn decode2DBayer(self: *FitsDecoder, dst: *Image.Managed, fits: Fits, pat_value: Value) !void {
         const pat = std.mem.trim(u8, pat_value.cast(.string) orelse return error.InvalidFitsImage, " ");
         const matrix = if (std.mem.eql(u8, pat, "RGGB"))
             filters.bayer_decoder.BayerMatrix.rg_gb
@@ -937,7 +937,7 @@ pub const FitsDecoder = struct {
             },
         }
 
-        const image = Image{
+        const src = Image{
             .descriptor = .{
                 .width = hdu.shape[0],
                 .height = hdu.shape[1],
@@ -946,7 +946,7 @@ pub const FitsDecoder = struct {
             .pixels = floating_pixels.ptr,
         };
 
-        return try filters.bayer_decoder.apply(a, matrix, image);
+        try filters.bayer_decoder.apply(dst, src, matrix);
     }
 
     pub fn decoder(self: *FitsDecoder) Decoder {

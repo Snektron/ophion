@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
+const Image = @import("Image.zig");
 const formats = @import("formats.zig");
 const filters = @import("filters.zig");
 const log = std.log.scoped(.main);
@@ -79,18 +80,26 @@ pub fn main() !void {
 
     log.info("Loading '{s}'", .{ opts.input_path });
 
-    const image = blk: {
+    var image = try Image.Managed.init(allocator, Image.Descriptor.empty);
+    defer image.deinit();
+
+    var tmp = try Image.Managed.init(allocator, Image.Descriptor.empty);
+    defer tmp.deinit();
+
+    {
         var decoder = formats.fits.decoder(allocator);
         defer decoder.deinit();
-        break :blk try decoder.decoder().decodePath(allocator, opts.input_path);
-    };
-
-    defer image.free(allocator);
+        try decoder.decoder().decodePath(&image, opts.input_path);
+    }
 
     log.info("Loaded image of {}x{} pixels", .{ image.descriptor.width, image.descriptor.height });
 
-    filters.normalize.apply(image);
+    filters.normalize.apply(image.unmanaged());
+    try filters.grayscale.apply(&tmp, image.unmanaged());
+    try filters.binarize.apply(&image, tmp.unmanaged(), .{});
+    try filters.convolve_separable.apply(&image, &tmp, image.unmanaged(), filters.convolve_separable.Avg.init(10));
 
     log.info("Saving result", .{});
-    try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image);
+    try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image.unmanaged());
+
 }
