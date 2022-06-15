@@ -26,6 +26,10 @@ pub const Descriptor = struct {
         return self.width * self.height * self.components;
     }
 
+    pub fn bytes(self: Descriptor) usize {
+        return self.size() * @sizeOf(f32);
+    }
+
     pub fn isInBounds(self: Descriptor, x: usize, y: usize) bool {
         return x < self.width and y < self.height;
     }

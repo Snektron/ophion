@@ -92,14 +92,17 @@ pub fn main() !void {
         try decoder.decoder().decodePath(&image, opts.input_path);
     }
 
-    log.info("Loaded image of {}x{} pixels", .{ image.descriptor.width, image.descriptor.height });
+    log.info("Loaded image of {}x{} pixels, {:.2}", .{
+        image.descriptor.width,
+        image.descriptor.height,
+        std.fmt.fmtIntSizeBin(image.descriptor.bytes()),
+    });
 
     filters.normalize.apply(image.unmanaged());
     try filters.grayscale.apply(&tmp, image.unmanaged());
+    try filters.gaussian.apply(&tmp, &image, tmp.unmanaged(), filters.gaussian.Kernel.init(3));
     try filters.binarize.apply(&image, tmp.unmanaged(), .{});
-    try filters.convolve_separable.apply(&image, &tmp, image.unmanaged(), filters.convolve_separable.Avg.init(10));
 
     log.info("Saving result", .{});
     try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image.unmanaged());
-
 }

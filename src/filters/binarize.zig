@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 const Image = @import("../Image.zig");
 
 pub const Options = struct {
-    min_stddev: f32 = 4,
+    min_stddev: f32 = 2,
 };
 
 fn imageMean(image: Image) f32 {
