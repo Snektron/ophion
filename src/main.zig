@@ -4,6 +4,7 @@ const File = std.fs.File;
 const Image = @import("Image.zig");
 const formats = @import("formats.zig");
 const filters = @import("filters.zig");
+const alignment = @import("alignment.zig");
 const log = std.log.scoped(.main);
 
 pub const log_level = .debug;
@@ -99,9 +100,25 @@ pub fn main() !void {
     });
 
     filters.normalize.apply(image.unmanaged());
-    try filters.grayscale.apply(&tmp, image.unmanaged());
-    try filters.gaussian.apply(&tmp, &image, tmp.unmanaged(), filters.gaussian.Kernel.init(3));
-    try filters.binarize.apply(&image, tmp.unmanaged(), .{});
+    // try filters.grayscale.apply(&tmp, image.unmanaged());
+    // try filters.gaussian.apply(&tmp, &image, tmp.unmanaged(), filters.gaussian.Kernel.init(3));
+    // try filters.binarize.apply(&image, tmp.unmanaged(), .{});
+
+    // var star_extractor = alignment.star_extraction.StarExtractor.init(allocator);
+    // defer star_extractor.deinit();
+
+    // log.info("Extracting stars", .{});
+
+    // var stars = alignment.StarList{};
+    // defer stars.deinit(allocator);
+    // try star_extractor.extract(allocator, &stars, image.unmanaged());
+    // log.info("Found {} stars", .{ stars.len });
+
+    // var i: usize = 0;
+    // while (i < stars.len) : (i += 1) {
+    //     const star = stars.get(i);
+    //     log.info("({d}, {d}), {d:.2}", .{ star.x, star.y, star.relative_magnitude });
+    // }
 
     log.info("Saving result", .{});
     try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image.unmanaged());

@@ -73,31 +73,31 @@ pub fn apply(dst: *Image.Managed, tmp: *Image.Managed, src: Image, kernel: anyty
     }
 }
 
-pub const Avg = struct {
+pub const Box = struct {
     radius: usize,
     inv_diam: f32,
 
-    pub fn init(radius: usize) Avg {
+    pub fn init(radius: usize) Box {
         return .{
             .radius = radius,
             .inv_diam = 1 / @intToFloat(f32, radius * 2 + 1),
         };
     }
 
-    pub fn horizontalRadius(self: Avg) usize {
+    pub fn horizontalRadius(self: Box) usize {
         return self.radius;
     }
 
-    pub fn verticalRadius(self: Avg) usize {
+    pub fn verticalRadius(self: Box) usize {
         return self.radius;
     }
 
-    pub fn getHorizontal(self: Avg, x: isize) f32 {
+    pub fn getHorizontal(self: Box, x: isize) f32 {
         _ = x;
         return self.inv_diam;
     }
 
-    pub fn getVertical(self: Avg, y: isize) f32 {
+    pub fn getVertical(self: Box, y: isize) f32 {
         _ = y;
         return self.inv_diam;
     }
