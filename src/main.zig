@@ -84,6 +84,9 @@ pub fn main() !void {
     var image = try Image.Managed.init(allocator, Image.Descriptor.empty);
     defer image.deinit();
 
+    var grayscale = try Image.Managed.init(allocator, Image.Descriptor.empty);
+    defer grayscale.deinit();
+
     var tmp = try Image.Managed.init(allocator, Image.Descriptor.empty);
     defer tmp.deinit();
 
@@ -100,25 +103,33 @@ pub fn main() !void {
     });
 
     filters.normalize.apply(image.unmanaged());
-    // try filters.grayscale.apply(&tmp, image.unmanaged());
-    // try filters.gaussian.apply(&tmp, &image, tmp.unmanaged(), filters.gaussian.Kernel.init(3));
-    // try filters.binarize.apply(&image, tmp.unmanaged(), .{});
+    try filters.grayscale.apply(&grayscale, image.unmanaged());
+    try filters.gaussian.apply(&tmp, &image, grayscale.unmanaged(), filters.gaussian.Kernel.init(3));
+    try filters.binarize.apply(&image, tmp.unmanaged(), .{});
 
-    // var star_extractor = alignment.star_extraction.StarExtractor.init(allocator);
-    // defer star_extractor.deinit();
+    log.info("Extracting stars", .{});
 
-    // log.info("Extracting stars", .{});
+    var coarse_stars = alignment.coarse.CoarseStarList{};
+    defer coarse_stars.deinit(allocator);
+    {
+        var coarse_extractor = alignment.coarse.CoarseStarExtractor.init(allocator);
+        defer coarse_extractor.deinit();
+        try coarse_extractor.extract(allocator, &coarse_stars, image.unmanaged());
+    }
 
-    // var stars = alignment.StarList{};
-    // defer stars.deinit(allocator);
-    // try star_extractor.extract(allocator, &stars, image.unmanaged());
-    // log.info("Found {} stars", .{ stars.len });
+    log.info("Coarse extractor found {} stars", .{ coarse_stars.len });
 
-    // var i: usize = 0;
-    // while (i < stars.len) : (i += 1) {
-    //     const star = stars.get(i);
-    //     log.info("({d}, {d}), {d:.2}", .{ star.x, star.y, star.relative_magnitude });
-    // }
+    var fine_stars = alignment.StarList{};
+    defer fine_stars.deinit(allocator);
+    try alignment.fine.extract(allocator, &fine_stars, grayscale.unmanaged(), coarse_stars);
+
+    log.info("Fine extractor found {} stars", .{ fine_stars.len });
+
+    var i: usize = 0;
+    while (i < fine_stars.len) : (i += 1) {
+        const star = fine_stars.get(i);
+        log.info("({d:.2}, {d:.2})", .{ star.x, star.y });
+    }
 
     log.info("Saving result", .{});
     try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", image.unmanaged());
