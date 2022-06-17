@@ -5,3 +5,5 @@ pub const grayscale = @import("filters/grayscale.zig");
 pub const convolve_separable = @import("filters/convolve_separable.zig");
 pub const copy = @import("filters/copy.zig");
 pub const gaussian = @import("filters/gaussian.zig");
+pub const add = @import("filters/add.zig");
+pub const statistics = @import("filters/statistics.zig");
