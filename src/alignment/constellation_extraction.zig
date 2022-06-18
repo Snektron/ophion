@@ -2,9 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Image = @import("../Image.zig");
-const alignment = @import("../alignment.zig");
 const BoundedMinSet = @import("../util/min_set.zig").BoundedMinSet;
-const StarList = alignment.fine.FineStarList;
 
 /// A "constellation" is in this case simply a triplet of stars.
 /// Instead of simply computing points though, we store for each constellation
@@ -72,16 +70,16 @@ pub const ConstellationExtractor = struct {
         self: *ConstellationExtractor,
         a: Allocator,
         constellations: *ConstellationList,
-        stars: StarList,
+        xs: []f32,
+        ys: []f32,
     ) !void {
+        assert(xs.len == ys.len);
         // We don't expect an extreme number of stars per image, maybe like 100 at most. Therefore we can
         // affort to implement this algorithm in a brute-force manner.
         // TODO: This extraction process could probably produce some better results by using a different method.
-        const xs = stars.items(.x);
-        const ys = stars.items(.y);
 
         var i: u32 = 0;
-        while (i < stars.len) : (i += 1) {
+        while (i < xs.len) : (i += 1) {
             var context = Context{
                 .xs = xs,
                 .ys = ys,
@@ -90,7 +88,7 @@ pub const ConstellationExtractor = struct {
             var closest_stars = BoundedMinSet(u32, Context, Context.cmp).init(context, self.closest_stars);
 
             var j: u32 = i + 1;
-            while (j < stars.len) : (j += 1) {
+            while (j < xs.len) : (j += 1) {
                 closest_stars.insert(j);
             }
 

@@ -166,13 +166,17 @@ pub fn main() !u8 {
         allocator.free(images);
     }
 
-    var aligner = alignment.Aligner.init(allocator);
-    defer aligner.deinit();
+    var frame_extractor = alignment.frame.FrameExtractor.init(allocator);
+    defer frame_extractor.deinit();
 
-    try aligner.alignImages(progress_root, images);
+    var frame_stack = try frame_extractor.alignImages(allocator, progress_root, images);
+    defer frame_stack.deinit(allocator);
 
-    for (aligner.frames.items) |frame| {
-        progress.log("{s}: {} stars\n", .{ opts.inputs[frame.index], frame.stars.len });
+    var i: usize = 0;
+    const image_index = frame_stack.frames.items(.image_index);
+    const first_star = frame_stack.frames.items(.first_star);
+    while (i < frame_stack.frames.len) : (i += 1) {
+        progress.log("{s}: {} stars\n", .{ opts.inputs[image_index[i]], frame_stack.num_stars(i, first_star) });
     }
 
     return 0;

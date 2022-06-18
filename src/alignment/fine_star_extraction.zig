@@ -2,8 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Image = @import("../Image.zig");
-const alignment = @import("../alignment.zig");
-const CoarseStarList = alignment.coarse.CoarseStarList;
 
 const radius = 16;
 
@@ -15,12 +13,11 @@ pub const FineStar = struct {
 
 pub const FineStarList = std.MultiArrayList(FineStar);
 
-pub fn extract(a: Allocator, fine: *FineStarList, image: Image, coarse: CoarseStarList) !void {
-    const xs = coarse.items(.x);
-    const ys = coarse.items(.y);
+pub fn extract(a: Allocator, fine: *FineStarList, image: Image, xs: []f32, ys: []f32) !void {
+    assert(xs.len == ys.len);
 
     var i: usize = 0;
-    while (i < coarse.len) : (i += 1) {
+    while (i < xs.len) : (i += 1) {
         const star = extractStar(image, xs[i], ys[i]) orelse continue;
         try fine.append(a, star);
     }
