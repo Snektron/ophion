@@ -4,10 +4,16 @@ const Allocator = std.mem.Allocator;
 const Image = @import("../Image.zig");
 const alignment = @import("../alignment.zig");
 const CoarseStarList = alignment.coarse.CoarseStarList;
-const FineStarList = alignment.StarList;
-const FineStar = alignment.Star;
 
 const radius = 16;
+
+pub const FineStar = struct {
+    x: f32,
+    y: f32,
+    stddev: f32,
+};
+
+pub const FineStarList = std.MultiArrayList(FineStar);
 
 pub fn extract(a: Allocator, fine: *FineStarList, image: Image, coarse: CoarseStarList) !void {
     const xs = coarse.items(.x);
@@ -35,22 +41,42 @@ fn extractStar(
     var total_y: f32 = 0;
     var total: f32 = 0;
 
-    var ix = x - radius;
-    while (ix < x + radius) : (ix += 1) {
-        var iy = y - radius;
-        while (iy < y + radius) : (iy += 1) {
-            const pixel = image.pixel(ix, iy)[0];
-            total_x += @intToFloat(f32, ix) * pixel;
-            total_y += @intToFloat(f32, iy) * pixel;
-            total += pixel;
+    {
+        var ix = x - radius;
+        while (ix < x + radius) : (ix += 1) {
+            var iy = y - radius;
+            while (iy < y + radius) : (iy += 1) {
+                const pixel = image.pixel(ix, iy)[0];
+                total_x += @intToFloat(f32, ix) * pixel;
+                total_y += @intToFloat(f32, iy) * pixel;
+                total += pixel;
+            }
         }
     }
 
     const cx = total_x / total;
     const cy = total_y / total;
 
+    var variance: f32 = 0;
+
+    {
+        var ix = x - radius;
+        while (ix < x + radius) : (ix += 1) {
+            var iy = y - radius;
+            while (iy < y + radius) : (iy += 1) {
+                const pixel = image.pixel(x, iy)[0];
+                const dx = (@intToFloat(f32, ix) - cx) * pixel;
+                const dy = (@intToFloat(f32, iy) - cy) * pixel;
+                variance += dx * dx + dy * dy;
+            }
+        }
+    }
+
+    const stddev = @sqrt(variance / (radius * radius));
+
     return FineStar{
         .x = cx,
         .y = cy,
+        .stddev = stddev,
     };
 }

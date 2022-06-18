@@ -18,4 +18,7 @@ pub fn build(b: *std.build.Builder) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    var test_step = b.step("test", "Run all the tests");
+    test_step.dependOn(&b.addTest("src/util/min_set.zig").step);
 }

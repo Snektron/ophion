@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const File = std.fs.File;
+const Progress = std.Progress;
 const Image = @import("Image.zig");
 const formats = @import("formats.zig");
 const filters = @import("filters.zig");
@@ -96,12 +96,52 @@ const Options = struct {
     }
 };
 
-const Input = struct {
-    image_index: usize,
-    stars: usize,
-};
+fn loadImages(progress: *Progress.Node, a: Allocator, paths: []const []const u8) ![]Image {
+    var load_progress = progress.start("Loading images", paths.len);
+    defer load_progress.end();
+    load_progress.activate();
 
-pub fn main() !void {
+    var images = try a.alloc(Image, paths.len);
+    errdefer a.free(images);
+
+    // Initialize images just so that we can make the defer easier.
+    for (images) |*image| image.* = Image.init(a, Image.Descriptor.empty) catch unreachable;
+    errdefer for (images) |image| image.deinit(a);
+
+    var fits_decoder = formats.fits.decoder(a);
+    defer fits_decoder.deinit();
+
+    const cwd = std.fs.cwd();
+
+    for (images) |*image, i| {
+        // https://github.com/ziglang/zig/pull/10859#issuecomment-1159508818
+        if (i != 0) load_progress.completeOne();
+
+        const path = paths[i];
+
+        var managed = image.managed(a);
+        var file = cwd.openFile(path, .{}) catch |err| {
+            log.err("Failed to open file '{s}': {s}", .{ path, @errorName(err) });
+            return error.LoadFailed;
+        };
+        defer file.close();
+
+        fits_decoder.decoder().decodeFile(&managed, file) catch |err| switch (err) {
+            error.NotOpenForReading => unreachable,
+            else => |other| {
+                log.err("Failed to read file '{s}': {s}", .{ path, @errorName(other) });
+                return error.LoadFailed;
+            },
+        };
+
+        image.* = managed.unmanaged();
+        filters.normalize.apply(image.*);
+    }
+
+    return images;
+}
+
+pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit()) {
         std.log.warn("Memory leaked", .{});
@@ -110,84 +150,30 @@ pub fn main() !void {
 
     var opts = Options.parse(allocator) catch |err| switch (err) {
         error.InvalidArgs => std.process.exit(1),
-        error.Help => return,
+        error.Help => return 0,
         else => |errs| return errs,
     };
     defer opts.deinit(allocator);
 
-    var inputs = try allocator.alloc(Input, opts.inputs.len);
-    defer allocator.free(inputs);
+    var progress = Progress{};
 
-    var image = try Image.Managed.init(allocator, Image.Descriptor.empty);
-    defer image.deinit();
+    var progress_root = progress.start("", 2);
+    defer progress_root.end();
 
-    var grayscale = try Image.Managed.init(allocator, Image.Descriptor.empty);
-    defer grayscale.deinit();
-
-    var tmp = try Image.Managed.init(allocator, Image.Descriptor.empty);
-    defer tmp.deinit();
-
-    var coarse_stars = alignment.coarse.CoarseStarList{};
-    defer coarse_stars.deinit(allocator);
-
-    var fine_stars = alignment.StarList{};
-    defer fine_stars.deinit(allocator);
-
-    for (inputs) |*input, i| {
-        const path = opts.inputs[i];
-        log.info(" Loading '{s}'", .{path});
-
-        {
-            var decoder = formats.fits.decoder(allocator);
-            defer decoder.deinit();
-            try decoder.decoder().decodePath(&image, path);
-        }
-
-        filters.normalize.apply(image.unmanaged());
-
-        if (opts.export_color) |export_path| {
-            try formats.ppm.encoder(.{}).encoder().encodePath(export_path, image.unmanaged());
-        }
-
-        try filters.grayscale.apply(&grayscale, image.unmanaged());
-        try filters.gaussian.apply(&tmp, &image, grayscale.unmanaged(), filters.gaussian.Kernel.init(3));
-        try filters.binarize.apply(&image, tmp.unmanaged(), .{ .min_stddev = 3 });
-
-        if (opts.export_starmask) |export_path| {
-            try formats.ppm.encoder(.{}).encoder().encodePath(export_path, image.unmanaged());
-        }
-
-        coarse_stars.len = 0;
-        {
-            var coarse_extractor = alignment.coarse.CoarseStarExtractor.init(allocator);
-            defer coarse_extractor.deinit();
-            try coarse_extractor.extract(allocator, &coarse_stars, image.unmanaged());
-        }
-
-        fine_stars.len = 0;
-        try alignment.fine.extract(allocator, &fine_stars, grayscale.unmanaged(), coarse_stars);
-
-        input.* = .{
-            .image_index = i,
-            .stars = fine_stars.len,
-        };
+    const images = loadImages(progress_root, allocator, opts.inputs) catch return 1;
+    defer {
+        for (images) |image| image.deinit(allocator);
+        allocator.free(images);
     }
 
-    const Sorter = struct {
-        fn cmp(_: @This(), a: Input, b: Input) bool {
-            return a.stars > b.stars;
-        }
-    };
+    var aligner = alignment.Aligner.init(allocator);
+    defer aligner.deinit();
 
-    log.info("----", .{});
+    try aligner.alignImages(progress_root, images);
 
-    std.sort.sort(Input, inputs, Sorter{}, Sorter.cmp);
-
-    const min_stars = 3;
-    for (inputs) |input| {
-        if (input.stars < min_stars) {
-            break;
-        }
-        log.info("{s}: {} stars", .{ opts.inputs[input.image_index], input.stars });
+    for (aligner.frames.items) |frame| {
+        progress.log("{s}: {} stars\n", .{ opts.inputs[frame.index], frame.stars.len });
     }
+
+    return 0;
 }
