@@ -8,3 +8,4 @@ pub const gaussian = @import("filters/gaussian.zig");
 pub const statistics = @import("filters/statistics.zig");
 pub const denoise = @import("filters/denoise.zig");
 pub const stacking = @import("filters/stacking.zig");
+pub const dark_bias_drame = @import("filters/dark_bias_frame.zig");

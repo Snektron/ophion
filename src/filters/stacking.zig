@@ -26,7 +26,6 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
 
     const w = @floatToInt(usize, @ceil(max_x - min_x));
     const h = @floatToInt(usize, @ceil(max_y - min_y));
-    // std.log.debug("final image: {}x{}", .{ w, h });
 
     try dst.realloc(.{
         .width = w,
@@ -55,8 +54,4 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
     }
 
     filters.normalize.apply(dst.unmanaged());
-
-    for (dst.data()) |*channel| {
-        channel.* = channel.* * 5;
-    }
 }

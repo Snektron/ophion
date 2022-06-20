@@ -187,7 +187,7 @@ pub const FrameAligner = struct {
     ) !void {
         assert(frame_stack.frames.len > 0);
 
-        try offsets.ensureTotalCapacity(a, frame_stack.frames.len);
+        try offsets.resize(a, frame_stack.frames.len);
 
         var align_progress = progress.start("Aligning frames", frame_stack.frames.len);
         defer align_progress.end();

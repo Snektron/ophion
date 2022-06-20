@@ -55,6 +55,10 @@ pub const Managed = struct {
         return image.managed(a);
     }
 
+    pub fn empty(a: Allocator) Managed {
+        return Managed.init(a, Descriptor.empty) catch unreachable;
+    }
+
     pub fn deinit(self: Managed) void {
         self.unmanaged().deinit(self.allocator);
     }

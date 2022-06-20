@@ -30,24 +30,7 @@ pub const Denoiser = struct {
         } else self.sorted_pixels.items[self.sorted_pixels.items.len / 2];
 
         for (image.data()) |*channel| {
-            channel.* = channel.* - median;
+            channel.* = std.math.clamp(channel.* - median, 0, 1);
         }
     }
 };
-
-pub fn reduceInstrumentNoise(image: Image, maybe_dark: ?Image, maybe_bias: ?Image) void {
-    // TODO: Read from fits or pass as arguments
-    const t_light = 5.0;
-    const t_dark = 2.0;
-
-    for (image.data()) |*channel, i| {
-        var val = channel.*;
-        if (maybe_dark) |dark| {
-            val -= dark.data()[i] * t_light / t_dark;
-        }
-        if (maybe_bias) |bias| {
-            val -= bias.data()[i];
-        }
-        channel.* = val;
-    }
-}

@@ -6,107 +6,202 @@ const Image = @import("Image.zig");
 const formats = @import("formats.zig");
 const filters = @import("filters.zig");
 const alignment = @import("alignment.zig");
-const log = std.log.scoped(.main);
+const log = std.log;
 const FitsDecoder = formats.fits.FitsDecoder;
 
 pub const log_level = .debug;
 
 const Options = struct {
-    prog_name: []const u8,
+    const Command = union(enum) {
+        const PixelMedian = struct {
+            inputs: []const []const u8,
+            output: ?[]const u8,
+        };
+        const Stack = struct {
+            inputs: []const []const u8,
+            output: ?[]const u8,
+            dark: ?[]const u8,
+            bias: ?[]const u8,
+        };
 
-    inputs: [][]const u8,
-    export_individual_color: ?[]const u8,
-    darkframe: ?[]const u8,
-    biasframe: ?[]const u8,
+        pixel_median: PixelMedian,
+        stack: Stack,
+        help,
+    };
+
+    prog_name: []const u8,
+    command: Command,
 
     fn parse(a: Allocator) !Options {
         const stderr = std.io.getStdErr().writer();
 
-        var help = false;
-
         var args = std.process.args();
         const prog_name = args.next() orelse return error.ExecutableNameMissing;
 
-        var inputs = std.ArrayList([]const u8).init(a);
-        defer inputs.deinit();
-
-        var export_individual_color: ?[]const u8 = null;
-        var darkframe: ?[]const u8 = null;
-        var biasframe: ?[]const u8 = null;
-
         invalid: {
-            while (args.next()) |arg| {
-                if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-                    help = true;
-                } else if (std.mem.eql(u8, arg, "--export-individual-color")) {
-                    export_individual_color = args.next() orelse {
-                        try stderr.print("Error: Missing required <directory> to --export-individual-color\n", .{});
-                        break :invalid;
-                    };
-                } else if (std.mem.eql(u8, arg, "--dark")) {
-                    darkframe = args.next() orelse {
-                        try stderr.print("Error: Missing required <path> to --dark\n", .{});
-                        break :invalid;
-                    };
-                } else if (std.mem.eql(u8, arg, "--bias")) {
-                    biasframe = args.next() orelse {
-                        try stderr.print("Error: Missing required <path> to --bias\n", .{});
-                        break :invalid;
-                    };
-                } else {
-                    try inputs.append(arg);
-                }
-            }
-
-            if (help) {
-                try printHelp(prog_name);
-                return error.Help;
-            }
-
-            if (inputs.items.len == 0) {
-                try stderr.print("Error: Missing at least one <input path>\n", .{});
+            const command_name = args.next() orelse {
+                try stderr.writeAll("Error: Missing <command>\n");
                 break :invalid;
-            }
+            };
+
+            const command_or_err = if (std.mem.eql(u8, command_name, "stack"))
+                parseStack(a, stderr, &args)
+            else if (std.mem.eql(u8, command_name, "pixel-median"))
+                parsePixelMedian(a, stderr, &args)
+            else if (std.mem.eql(u8, command_name, "help"))
+                @as(Command, .help)
+            else {
+                try stderr.print("Error: Invalid command '{s}'\n", .{command_name});
+                break :invalid;
+            };
+
+            const command = command_or_err catch |err| switch (err) {
+                error.InvalidArgs => break :invalid,
+                else => |others| return others,
+            };
 
             return Options{
                 .prog_name = prog_name,
-                .inputs = inputs.toOwnedSlice(),
-                .export_individual_color = export_individual_color,
-                .darkframe = darkframe,
-                .biasframe = biasframe,
+                .command = command,
             };
         }
 
-        try stderr.print("See '{s} --help'", .{prog_name});
+        try stderr.print("See '{s} help'", .{prog_name});
         return error.InvalidArgs;
     }
 
-    fn deinit(self: Options, a: Allocator) void {
-        a.free(self.inputs);
+    fn parseStack(a: Allocator, stderr: std.fs.File.Writer, args: *std.process.ArgIterator) !Command {
+        var inputs = std.ArrayList([]const u8).init(a);
+        defer inputs.deinit();
+
+        var output: ?[]const u8 = null;
+        var dark: ?[]const u8 = null;
+        var bias: ?[]const u8 = null;
+
+        while (args.next()) |arg| {
+            if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+                output = args.next() orelse {
+                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{ arg });
+                    return error.InvalidArgs;
+                };
+            } else if (std.mem.eql(u8, arg, "--dark")) {
+                dark = args.next() orelse {
+                    try stderr.writeAll("Error: Missing required argument <path> to --dark\n");
+                    return error.InvalidArgs;
+                };
+            } else if (std.mem.eql(u8, arg, "--bias")) {
+                bias = args.next() orelse {
+                    try stderr.writeAll("Error: Missing required argument <path> to --bias\n");
+                    return error.InvalidArgs;
+                };
+            } else {
+                try inputs.append(arg);
+            }
+        }
+
+        if (inputs.items.len == 0) {
+            try stderr.writeAll("Error: Command 'stack' requires at least one <input>\n");
+            return error.InvalidArgs;
+        }
+
+        return Command{
+            .stack = .{
+                .inputs = inputs.toOwnedSlice(),
+                .output = output,
+                .dark = dark,
+                .bias = bias,
+            },
+        };
     }
 
-    fn printHelp(prog_name: []const u8) !void {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print(
-            \\Usage: {s} [options..] <image paths...>
-            \\
-            \\Options:
-            \\-h --help
-            \\    Show this message and exit.
-            \\--export-individual-color <directory>
-            \\    Export the unaltered color versions of each decoded input image into
-            \\    <directory>.
-            \\--dark <path>
-            \\    Specify the darkframe to be used.
-            \\--bias <path>
-            \\    Specify the biasframe to be used.
-            ,
-            .{prog_name},
-        );
+    fn parsePixelMedian(a: Allocator, stderr: std.fs.File.Writer, args: *std.process.ArgIterator) !Command {
+        var inputs = std.ArrayList([]const u8).init(a);
+        defer inputs.deinit();
+
+        var output: ?[]const u8 = null;
+
+        while (args.next()) |arg| {
+            if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+                output = args.next() orelse {
+                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{ arg });
+                    return error.InvalidArgs;
+                };
+            } else {
+                try inputs.append(arg);
+            }
+        }
+
+        if (inputs.items.len == 0) {
+            try stderr.writeAll("Error: Command 'pixel-median' requires at least one <input>\n");
+            return error.InvalidArgs;
+        }
+
+        return Command{
+            .pixel_median = .{
+                .inputs = inputs.toOwnedSlice(),
+                .output = output,
+            },
+        };
+    }
+
+    fn deinit(self: Options, a: Allocator) void {
+        switch (self.command) {
+            .stack => |stack| a.free(stack.inputs),
+            .pixel_median => |pixel_median| a.free(pixel_median.inputs),
+            .help => {},
+        }
     }
 };
 
-fn importImages(fits_decoder: *FitsDecoder, progress: *Progress.Node, dark: ?Image, bias: ?Image, a: Allocator, paths: []const []const u8) ![]Image {
+fn printHelp(prog_name: []const u8) !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print(
+        \\Usage: {s} <command> [command-options...]
+        \\
+        \\Commands:
+        \\help
+        \\    Show this message and exit
+        \\
+        \\stack [options] <inputs...>
+        \\    Stack a number of images together.
+        \\    Additional options:
+        \\    -o --output <path>
+        \\        Write the result to this path.
+        \\    --dark <path>
+        \\        Specify path to dark image to denoise input with.
+        \\    --bias <path>
+        \\        Specify path to bias image to denoise input with.
+        \\
+        \\pixel-median [options] <input...>
+        \\    Produce an image which is the pixel-wise median of each input image,
+        \\    which can for example be used as dark- or bias when stacking.
+        \\    Each image should be the same size.
+        \\    Additional options:
+        \\    -o --output <path>
+        \\        Write the result to this path.
+        \\
+        ,
+        .{prog_name},
+    );
+}
+
+fn importImage(image: *Image.Managed, fits_decoder: *FitsDecoder, cwd: std.fs.Dir, path: []const u8) !void {
+    var file = cwd.openFile(path, .{}) catch |err| {
+        log.err("Failed to open file '{s}': {s}", .{ path, @errorName(err) });
+        return error.ReportedError;
+    };
+    defer file.close();
+
+    fits_decoder.decoder().decodeFile(image, file) catch |err| switch (err) {
+        error.NotOpenForReading => unreachable,
+        else => |other| {
+            log.err("Failed to read file '{s}': {s}", .{ path, @errorName(other) });
+            return error.ReportedError;
+        },
+    };
+}
+
+fn importImages(cwd: std.fs.Dir, fits_decoder: *FitsDecoder, progress: *Progress.Node, a: Allocator, paths: []const []const u8) ![]Image {
     var load_progress = progress.start("Loading images", paths.len);
     defer load_progress.end();
     load_progress.activate();
@@ -118,86 +213,20 @@ fn importImages(fits_decoder: *FitsDecoder, progress: *Progress.Node, dark: ?Ima
     for (images) |*image| image.* = Image.init(a, Image.Descriptor.empty) catch unreachable;
     errdefer for (images) |image| image.deinit(a);
 
-    const cwd = std.fs.cwd();
-
     for (images) |*image, i| {
         // https://github.com/ziglang/zig/pull/10859#issuecomment-1159508818
         if (i != 0) load_progress.completeOne();
 
         const path = paths[i];
-
         var managed = image.managed(a);
-        var file = cwd.openFile(path, .{}) catch |err| {
-            log.err("Failed to open file '{s}': {s}", .{ path, @errorName(err) });
-            return error.LoadFailed;
-        };
-        defer file.close();
-
-        fits_decoder.decoder().decodeFile(&managed, file) catch |err| switch (err) {
-            error.NotOpenForReading => unreachable,
-            else => |other| {
-                log.err("Failed to read file '{s}': {s}", .{ path, @errorName(other) });
-                return error.LoadFailed;
-            },
-        };
-
+        try importImage(&managed, fits_decoder, cwd, path);
         image.* = managed.unmanaged();
-        filters.denoise.reduceInstrumentNoise(image.*, dark, bias);
-        filters.normalize.apply(image.*);
     }
 
     return images;
 }
 
-fn exportColor(a: Allocator, progress: *Progress.Node, paths: []const []const u8, images: []Image, base_dir: []const u8) !void {
-    assert(paths.len == images.len);
-
-    var export_progress = progress.start("Exporting decoded images", paths.len);
-    defer export_progress.end();
-    export_progress.activate();
-
-    const dir = std.fs.cwd().openDir(base_dir, .{}) catch |err| {
-        log.err("Failed to open output directory '{s}': {s}", .{ base_dir, @errorName(err)  });
-        return error.ExportFailed;
-    };
-
-    var path = std.ArrayList(u8).init(a);
-    defer path.deinit();
-
-    var ppm_encoder = formats.ppm.encoder(.{});
-    for (images) |image, i| {
-        if (i != 0) export_progress.completeOne();
-
-        const basename = std.fs.path.basename(paths[i]);
-        const ext = std.fs.path.extension(basename);
-
-        path.items.len = 0;
-        try std.fmt.format(path.writer(), "{s}.ppm", .{basename[0..basename.len - ext.len]});
-
-        const file = dir.createFile(path.items, .{}) catch |err| {
-            log.err("Failed to open file '{s}': {s}", .{ path.items, @errorName(err) });
-            return error.ExportFailed;
-        };
-        defer file.close();
-
-        try ppm_encoder.encoder().encodeFile(file, image);
-    }
-}
-
-pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit()) {
-        std.log.warn("Memory leaked", .{});
-    };
-    const allocator = gpa.allocator();
-
-    var opts = Options.parse(allocator) catch |err| switch (err) {
-        error.InvalidArgs => std.process.exit(1),
-        error.Help => return 0,
-        else => |errs| return errs,
-    };
-    defer opts.deinit(allocator);
-
+fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !void {
     var progress = Progress{};
 
     var progress_root = progress.start("", 0);
@@ -206,29 +235,41 @@ pub fn main() !u8 {
     var fits_decoder = formats.fits.decoder(allocator);
     defer fits_decoder.deinit();
 
-    const darkframe = if (opts.darkframe) |path| blk: {
-        var image = Image.Managed.init(allocator, Image.Descriptor.empty) catch unreachable;
-        try fits_decoder.decoder().decodePath(&image, path);
+    const dark_image = if (opts.dark) |path| blk: {
+        var image = Image.Managed.empty(allocator);
+        try importImage(&image, &fits_decoder, cwd, path);
         break :blk image.unmanaged();
-    } else null;
-    defer if (darkframe) |image| image.deinit(allocator);
+    } else
+        null;
+    defer if (dark_image) |image| image.deinit(allocator);
 
-    const biasframe = if (opts.biasframe) |path| blk: {
-        var image = Image.Managed.init(allocator, Image.Descriptor.empty) catch unreachable;
-        try fits_decoder.decoder().decodePath(&image, path);
+    const bias_image = if (opts.bias) |path| blk: {
+        var image = Image.Managed.empty(allocator);
+        try importImage(&image, &fits_decoder, cwd, path);
         break :blk image.unmanaged();
-    } else null;
+    } else
+        null;
+    defer if (bias_image) |image| image.deinit(allocator);
 
-    const images = importImages(&fits_decoder, progress_root, darkframe, biasframe, allocator, opts.inputs) catch return 1;
+    const images = try importImages(cwd, &fits_decoder, progress_root, allocator, opts.inputs);
     defer {
         for (images) |image| image.deinit(allocator);
         allocator.free(images);
     }
 
-    defer if (biasframe) |image| image.deinit(allocator);
+    for (images) |image| {
+        filters.dark_bias_drame.apply(image, dark_image, bias_image, .{.dark_frame_multiplier = 5.0 / 2.0});
+        filters.normalize.apply(image);
+    }
 
-    if (opts.export_individual_color) |base_dir| {
-        exportColor(allocator, progress_root, opts.inputs, images, base_dir) catch return 1;
+    if (images.len == 1) {
+        if (opts.output) |path| {
+            var denoiser = filters.denoise.Denoiser.init(allocator);
+            defer denoiser.deinit();
+            try denoiser.apply(images[0]);
+            try formats.ppm.encoder(.{}).encoder().encodePath(path, images[0]);
+        }
+        return;
     }
 
     var frame_extractor = alignment.frame.FrameExtractor.init(allocator);
@@ -236,6 +277,11 @@ pub fn main() !u8 {
 
     var frame_stack = try frame_extractor.extract(allocator, progress_root, images);
     defer frame_stack.deinit(allocator);
+
+    if (frame_stack.frames.len == 0) {
+        log.err("No stars detected in any frame", .{});
+        return error.ReportedError;
+    }
 
     var aligner = alignment.aligner.FrameAligner.init(allocator);
     defer aligner.deinit();
@@ -277,21 +323,52 @@ pub fn main() !u8 {
         try filters.stacking.apply(&result, images_to_stack, offsets.items(.dx), offsets.items(.dy));
     }
 
-    try formats.ppm.encoder(.{}).encoder().encodePath("out.ppm", result.unmanaged());
+    if (opts.output) |path| {
+        try formats.ppm.encoder(.{}).encoder().encodePath(path, result.unmanaged());
+    }
 
-    // var i: usize = 0;
-    // const image_index = frame_stack.frames.items(.image_index);
-    // const first_star = frame_stack.frames.items(.first_star);
-    // const first_constellation = frame_stack.frames.items(.first_constellation);
-    // while (i < frame_stack.frames.len) : (i += 1) {
-    //     progress.log("{s}: {} stars, {} constellations, offset {d:.2} {d:.2}\n", .{
-    //         opts.inputs[image_index[i]],
-    //         frame_stack.numStars(i, first_star),
-    //         frame_stack.numConstellations(i, first_constellation),
-    //         offsets.items(.dx)[i],
-    //         offsets.items(.dy)[i],
-    //     });
-    // }
+    var i: usize = 0;
+    const image_index = frame_stack.frames.items(.image_index);
+    const first_star = frame_stack.frames.items(.first_star);
+    const first_constellation = frame_stack.frames.items(.first_constellation);
+    while (i < frame_stack.frames.len) : (i += 1) {
+        progress.log("{s}: {} stars, {} constellations, offset {d:.2} {d:.2}\n", .{
+            opts.inputs[image_index[i]],
+            frame_stack.numStars(i, first_star),
+            frame_stack.numConstellations(i, first_constellation),
+            offsets.items(.dx)[i],
+            offsets.items(.dy)[i],
+        });
+    }
+}
+
+pub fn main() !u8 {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer if (gpa.deinit()) {
+        log.warn("Memory leaked", .{});
+    };
+    const allocator = gpa.allocator();
+    const cwd = std.fs.cwd();
+
+    var opts = Options.parse(allocator) catch |err| switch (err) {
+        error.InvalidArgs => return 1,
+        else => |errs| return errs,
+    };
+    defer opts.deinit(allocator);
+
+    const maybe_err = switch (opts.command) {
+        .stack => |stack_opts| stack(cwd, allocator, stack_opts),
+        .pixel_median => return error.Todo,
+        .help => {
+            try printHelp(opts.prog_name);
+            return 0;
+        },
+    };
+
+    maybe_err catch |err| switch (err) {
+        error.ReportedError => return 1,
+        else => |other| return other,
+    };
 
     return 0;
 }
