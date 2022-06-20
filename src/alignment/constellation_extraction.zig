@@ -10,20 +10,44 @@ const BoundedMinSet = @import("../util/min_set.zig").BoundedMinSet;
 /// and so gives us constant values to compare even if frames differ under these transformations.
 /// Stars in a constellation are always counter-clockwise with respect to the order in the image.
 pub const Constellation = struct {
-    star_indices: struct {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
+    pub const Indices = [3]u32;
+    pub const Distances = [3]f32;
 
-    /// Angle between stars a and b
-    cab: f32,
-    /// Angle between stars b and c
-    abc: f32,
+    // distances[i] gives the distance between the two stars opposing stars[i].
+    stars: Indices,
+    distances: Distances,
 
-    /// Return the angle between stars a and b on star c
-    pub fn bca(self: Constellation) f32 {
-        return std.math.pi - self.cab - self.abc;
+    fn distSq3(dx: f32, dy: f32, dz: f32) f32 {
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    pub const CompareResult = struct {
+        distance_sq: f32,
+        // The rotation that `b` needs to be `rotate`d to in order to match `a` star-for-star.
+        rotation: u8,
+    };
+
+    pub fn cmp(a: Constellation, b: Constellation) CompareResult {
+        const d0 = distSq3(a.distances[0] - b.distances[0], a.distances[1] - b.distances[1], a.distances[2] - b.distances[2]);
+        const d1 = distSq3(a.distances[0] - b.distances[1], a.distances[1] - b.distances[2], a.distances[2] - b.distances[0]);
+        const d2 = distSq3(a.distances[0] - b.distances[2], a.distances[1] - b.distances[0], a.distances[2] - b.distances[1]);
+
+        return if (d0 < d1 and d0 < d2)
+            CompareResult{.distance_sq = d0, .rotation = 0}
+        else if (d1 < d2)
+            CompareResult{.distance_sq = d1, .rotation = 1}
+        else
+            CompareResult{.distance_sq = d2, .rotation = 2};
+    }
+
+    pub fn rotate(self: Constellation, rotation: u8) Constellation {
+        var result: Constellation = undefined;
+        var i: usize = 0;
+        while (i < 3) : (i += 1) {
+            result.stars[i] = self.stars[(i + rotation) % self.stars.len];
+            result.distances[i] = self.distances[(i + rotation) % self.distances.len];
+        }
+        return result;
     }
 };
 
@@ -31,7 +55,7 @@ pub const ConstellationList = std.MultiArrayList(Constellation);
 
 pub const Options = struct {
     /// The number of closest stars to consider when forming constellations.
-    form_constellations_with: u32 = 5,
+    form_constellations_with: u32 = 50,
 };
 
 const Context = struct {
@@ -62,7 +86,7 @@ pub const ConstellationExtractor = struct {
         };
     }
 
-    pub fn deinit(self: ConstellationExtractor, a: Allocator) void {
+    pub fn deinit(self: *ConstellationExtractor, a: Allocator) void {
         a.free(self.closest_stars);
     }
 
@@ -135,10 +159,6 @@ pub const ConstellationExtractor = struct {
         return @sqrt(dx * dx + dy * dy);
     }
 
-    fn angle(a: f32, b: f32, c: f32) f32 {
-        return std.math.acos((a * a + b * b - c * c) / (2 * a * b));
-    }
-
     fn addConstellation(
         a: Allocator,
         constellations: *ConstellationList,
@@ -150,8 +170,8 @@ pub const ConstellationExtractor = struct {
     ) !void {
         // Make sure that the constellation has the correct winding order
         const p_i = Point.load(xs, ys, i);
-        var p_j = Point.load(xs, ys, j);
-        var p_k = Point.load(xs, ys, k);
+        const p_j = Point.load(xs, ys, j);
+        const p_k = Point.load(xs, ys, k);
 
         // Compute angles kij and ijk, jki follows from that
         // and we dont need to use trig for that.
@@ -159,32 +179,19 @@ pub const ConstellationExtractor = struct {
         const jk = dist(p_j, p_k);
         const ki = dist(p_k, p_i);
 
-        const kij = angle(jk, ki, ij);
-        const ijk = angle(ki, jk, ij);
-        const jki = std.math.pi - kij - ijk;
-
         // If k is left of i->j, we need to flip the triangle to make it have the right winding order.
         const k_left_of_ij = halfSpaceTest(p_i, p_j, p_k);
-        if (k_left_of_ij) {
-            try constellations.append(a, .{
-                .star_indices = .{
-                    .a = i,
-                    .b = j,
-                    .c = k,
-                },
-                .cab = kij,
-                .abc = ijk,
-            });
-        } else {
-            try constellations.append(a, .{
-                .star_indices = .{
-                    .a = i,
-                    .b = k,
-                    .c = j,
-                },
-                .cab = kij,
-                .abc = jki,
-            });
-        }
+        const constellation = if (k_left_of_ij)
+            Constellation{
+                .stars = .{ i, j, k },
+                .distances = .{ jk, ki, ij },
+            }
+        else
+            Constellation{
+                .stars = .{ i, k, j },
+                .distances = .{ jk, ij, ki },
+            };
+
+        try constellations.append(a, constellation);
     }
 };

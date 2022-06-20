@@ -31,16 +31,16 @@ pub const FrameStack = struct {
         self.constellations.deinit(a);
     }
 
-    pub fn num_stars(self: FrameStack, i: usize, first_star: []const u32) usize {
+    pub fn numStars(self: FrameStack, i: usize, first_star: []const u32) u32 {
         return if (i == self.frames.len - 1)
-            self.stars.len - first_star[i]
+            @intCast(u32, self.stars.len) - first_star[i]
         else
             first_star[i + 1] - first_star[i];
     }
 
-    pub fn num_constellations(self: FrameStack, i: usize, first_constellation: []const u32) usize {
+    pub fn numConstellations(self: FrameStack, i: usize, first_constellation: []const u32) u32 {
         return if (i == self.frames.len - 1)
-            self.constellations.len - first_constellation[i]
+            @intCast(u32, self.constellations.len) - first_constellation[i]
         else
             first_constellation[i + 1] - first_constellation[i];
     }
@@ -66,7 +66,7 @@ pub const FrameExtractor = struct {
         self.coarse_stars.deinit(self.a);
     }
 
-    pub fn alignImages(self: *FrameExtractor, a: Allocator, progress: *Progress.Node, images: []Image) !FrameStack {
+    pub fn extract(self: *FrameExtractor, a: Allocator, progress: *Progress.Node, images: []Image) !FrameStack {
         var extract_progress = progress.start("Extracting constellations", images.len);
         defer extract_progress.end();
         extract_progress.activate();

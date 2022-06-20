@@ -63,7 +63,7 @@ test "BoundedMinSet" {
 
     minset.insert(7);
     try testing.expectEqualSlices(usize, &.{5, 7}, minset.items);
-    std.debug.print("----\n", .{});
+
     minset.insert(3);
     try testing.expectEqualSlices(usize, &.{3, 5, 7}, minset.items);
 

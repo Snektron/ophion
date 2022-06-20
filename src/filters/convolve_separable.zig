@@ -2,20 +2,21 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Image = @import("../Image.zig");
 
-fn pixelOr(image: Image, x: isize, y: isize, out_of_bounds: f32) f32 {
+inline fn pixelOr(image: Image, x: isize, y: isize, out_of_bounds: f32) f32 {
     return if (x < 0 or y < 0 or x >= image.descriptor.width or y >= image.descriptor.height)
         out_of_bounds
     else
         image.pixel(@intCast(usize, x), @intCast(usize, y))[0];
 }
 
-fn convolveVertical(
+inline fn convolveVertical(
     result: []f32,
     image: Image,
     cx: usize,
     cy: usize,
     kernel: anytype,
 ) void {
+    @setRuntimeSafety(false);
     const radius = @intCast(isize, kernel.verticalRadius());
     const icx = @intCast(isize, cx);
     const icy = @intCast(isize, cy);
@@ -27,13 +28,14 @@ fn convolveVertical(
     result[0] = pixel;
 }
 
-fn convolveHorizontal(
+inline fn convolveHorizontal(
     result: []f32,
     image: Image,
     cx: usize,
     cy: usize,
     kernel: anytype,
 ) void {
+    @setRuntimeSafety(false);
     const radius = @intCast(isize, kernel.horizontalRadius());
     const icx = @intCast(isize, cx);
     const icy = @intCast(isize, cy);
@@ -50,6 +52,7 @@ pub fn apply(dst: *Image.Managed, tmp: *Image.Managed, src: Image, kernel: anyty
     try tmp.realloc(src.descriptor);
 
     {
+        @setRuntimeSafety(false);
         var y: usize = 0;
         while (y < src.descriptor.height) : (y += 1) {
             var x: usize = 0;
@@ -63,6 +66,7 @@ pub fn apply(dst: *Image.Managed, tmp: *Image.Managed, src: Image, kernel: anyty
     const tmp_view = tmp.unmanaged();
 
     {
+        @setRuntimeSafety(false);
         var y: usize = 0;
         while (y < src.descriptor.height) : (y += 1) {
             var x: usize = 0;
