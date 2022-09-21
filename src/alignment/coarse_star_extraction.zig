@@ -37,8 +37,6 @@ pub const CoarseStarExtractor = struct {
 
     pub fn extract(self: *CoarseStarExtractor, a: Allocator, stars: *CoarseStarList, image: Image) !void {
         assert(image.descriptor.components == 1);
-        _ = stars;
-        _ = a;
         try self.seen.resize(self.allocator(), image.descriptor.pixels(), false);
         self.seen.setRangeValue(.{.start = 0, .end = image.descriptor.pixels()}, false);
 

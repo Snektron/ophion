@@ -3,31 +3,31 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Image = @import("../Image.zig");
+const filters = @import("../filters.zig");
 
 pub const Denoiser = struct {
-    a: Allocator,
-    sorted_pixels: std.ArrayListUnmanaged(f32) = .{},
+    tmp: Image.Managed,
 
     pub fn init(a: Allocator) Denoiser {
         return .{
-            .a = a,
+            .tmp = Image.Managed.empty(a),
         };
     }
 
     pub fn deinit(self: *Denoiser) void {
-        self.sorted_pixels.deinit(self.a);
+        self.tmp.deinit();
     }
 
     pub fn apply(self: *Denoiser, image: Image) !void {
-        self.sorted_pixels.items.len = 0;
-        try self.sorted_pixels.appendSlice(self.a, image.data());
-        std.sort.sort(f32, self.sorted_pixels.items, {}, comptime std.sort.asc(f32));
+        try filters.grayscale.apply(&self.tmp, image);
+        const sorted = self.tmp.data();
+        std.sort.sort(f32, sorted, {}, comptime std.sort.asc(f32));
 
-        const median = if (self.sorted_pixels.items.len % 2 == 0) blk: {
-            const a = self.sorted_pixels.items[self.sorted_pixels.items.len / 2];
-            const b = self.sorted_pixels.items[self.sorted_pixels.items.len / 2 + 1];
+        const median = if (sorted.len % 2 == 0) blk: {
+            const a = sorted[sorted.len / 2];
+            const b = sorted[sorted.len / 2 + 1];
             break :blk (a + b) / 2;
-        } else self.sorted_pixels.items[self.sorted_pixels.items.len / 2];
+        } else sorted[sorted.len / 2];
 
         for (image.data()) |*channel| {
             channel.* = std.math.clamp(channel.* - median, 0, 1);

@@ -8,7 +8,6 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
     assert(srcs.len > 0);
     assert(srcs.len == dxs.len);
     assert(srcs.len == dys.len);
-    _ = dst;
 
     var min_x: f32 = 0;
     var min_y: f32 = 0;
@@ -53,5 +52,5 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
         }
     }
 
-    filters.normalize.apply(dst.unmanaged());
+    // filters.normalize.apply(dst.unmanaged());
 }

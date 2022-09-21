@@ -329,6 +329,13 @@ pub const Fits = struct {
         try writer.writeAll("}\n");
     }
 
+    fn byteSwapSlice(comptime width: usize, buffer: []align(data_align) u8) void {
+        const IntType = std.meta.Int(.unsigned, width);
+        for (std.mem.bytesAsSlice(IntType, buffer)) |*x| {
+            x.* = @byteSwap(x.*);
+        }
+    }
+
     /// Read raw data fro mthe HDU into the buffer, which must be large enough to hold all the data.
     /// Endianness is fixed to little, if required.
     pub fn readData(self: Fits, hdu: *const Hdu, storage: []align(data_align) u8) !Data {
@@ -343,19 +350,23 @@ pub const Fits = struct {
 
         const buffer = storage[0..data_size];
 
-        inline for (std.meta.fields(Format)) |field| {
-            const format = @field(Format, field.name);
-            const IntType = std.meta.Int(.unsigned, comptime format.bitSize());
-            if (hdu.format == format) {
-                for (std.mem.bytesAsSlice(IntType, buffer)) |*x| {
-                    x.* = @byteSwap(IntType, x.*);
-                }
-
-                return @unionInit(Data, field.name, std.mem.bytesAsSlice(format.Type(), buffer));
-            }
+        // Flip endianness
+        switch (hdu.format) {
+            .int8 => {},
+            .int16 => byteSwapSlice(16, buffer),
+            .int32, .float32 => byteSwapSlice(32, buffer),
+            .int64, .float64 => byteSwapSlice(64, buffer),
         }
 
-        unreachable;
+        // Written out because stage 2 cannot cope with an inline for loop here...
+        return switch (hdu.format) {
+            .int8 => .{.int8 = std.mem.bytesAsSlice(i8, buffer)},
+            .int16 => .{.int16 = std.mem.bytesAsSlice(i16, buffer)},
+            .int32 => .{.int32 = std.mem.bytesAsSlice(i32, buffer)},
+            .int64 => .{.int64 = std.mem.bytesAsSlice(i64, buffer)},
+            .float32 => .{.float32 = std.mem.bytesAsSlice(f32, buffer)},
+            .float64 => .{.float64 = std.mem.bytesAsSlice(f64, buffer)},
+        };
     }
 
     pub fn readDataAlloc(self: Fits, hdu: *const Hdu, a: Allocator) !Data {
@@ -599,7 +610,7 @@ const Keyword = struct {
             '/' => Value.none,
             'T', 'F' => blk: {
                 defer i += 1;
-                break :blk .{.logical = kw[i] == 'T'};
+                break :blk Value{.logical = kw[i] == 'T'};
             },
             '\'' => try value_parser.readString(),
             '(' => try value_parser.readComplex(),
@@ -867,6 +878,10 @@ pub const FitsDecoder = struct {
     }
 
     fn decode2DBayer(self: *FitsDecoder, dst: *Image.Managed, fits: Fits, pat_value: Value) !void {
+        // _ = self;
+        // _ = dst;
+        // _ = fits;
+        // _ = pat_value;
         const pat = std.mem.trim(u8, pat_value.cast(.string) orelse return error.InvalidFitsImage, " ");
         const matrix = if (std.mem.eql(u8, pat, "RGGB"))
             filters.bayer_decoder.BayerMatrix.rg_gb

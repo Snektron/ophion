@@ -96,6 +96,11 @@ pub const Managed = struct {
     }
 };
 
+pub const empty = Image{
+    .descriptor = Image.Descriptor.empty,
+    .pixels = undefined,
+};
+
 pub fn init(a: Allocator, descriptor: Descriptor) !Image {
     const pixels = try a.alloc(f32, descriptor.size());
     return Image{

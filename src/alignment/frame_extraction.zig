@@ -55,8 +55,8 @@ pub const FrameExtractor = struct {
     pub fn init(a: Allocator) FrameExtractor {
         return .{
             .a = a,
-            .tmp_grayscale = Image.init(a, Image.Descriptor.empty) catch unreachable,
-            .tmp_starmask = Image.init(a, Image.Descriptor.empty) catch unreachable,
+            .tmp_grayscale = Image.empty,
+            .tmp_starmask = Image.empty,
         };
     }
 

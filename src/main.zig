@@ -210,7 +210,7 @@ fn importImages(cwd: std.fs.Dir, fits_decoder: *FitsDecoder, progress: *Progress
     errdefer a.free(images);
 
     // Initialize images just so that we can make the defer easier.
-    for (images) |*image| image.* = Image.init(a, Image.Descriptor.empty) catch unreachable;
+    for (images) |*image| image.* = Image.empty;
     errdefer for (images) |image| image.deinit(a);
 
     for (images) |*image, i| {
@@ -300,20 +300,20 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
         }
     }
 
-    {
-        var denoise_progress = progress_root.start("Denoising images", images.len);
-        defer denoise_progress.end();
-        denoise_progress.activate();
+    // {
+    //     var denoise_progress = progress_root.start("Denoising images", images.len);
+    //     defer denoise_progress.end();
+    //     denoise_progress.activate();
 
-        var denoiser = filters.denoise.Denoiser.init(allocator);
-        defer denoiser.deinit();
-        for (images_to_stack) |image, i| {
-            if (i != 0) denoise_progress.completeOne();
-            try denoiser.apply(image);
-        }
-    }
+    //     var denoiser = filters.denoise.Denoiser.init(allocator);
+    //     defer denoiser.deinit();
+    //     for (images_to_stack) |image, i| {
+    //         if (i != 0) denoise_progress.completeOne();
+    //         try denoiser.apply(image);
+    //     }
+    // }
 
-    var result = Image.Managed.init(allocator, Image.Descriptor.empty) catch unreachable;
+    var result = Image.Managed.empty(allocator);
     defer result.deinit();
 
     {
@@ -322,6 +322,11 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
         stack_progress.activate();
         try filters.stacking.apply(&result, images_to_stack, offsets.items(.dx), offsets.items(.dy));
     }
+
+    var denoiser = filters.denoise.Denoiser.init(allocator);
+    defer denoiser.deinit();
+    try denoiser.apply(result.unmanaged());
+    // filters.normalize.apply(result.unmanaged());
 
     if (opts.output) |path| {
         try formats.ppm.encoder(.{}).encoder().encodePath(path, result.unmanaged());
