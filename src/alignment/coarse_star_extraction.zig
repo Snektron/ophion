@@ -17,7 +17,7 @@ pub const CoarseStarExtractor = struct {
         y: u16,
     };
 
-    const cutoff = 0.5;
+    const cutoff = 0.9;
     const Queue = std.fifo.LinearFifo(PixelPos, .Dynamic);
 
     /// Also holds the allocator for this struct.
@@ -38,13 +38,13 @@ pub const CoarseStarExtractor = struct {
     pub fn extract(self: *CoarseStarExtractor, a: Allocator, stars: *CoarseStarList, image: Image) !void {
         assert(image.descriptor.components == 1);
         try self.seen.resize(self.allocator(), image.descriptor.pixels(), false);
-        self.seen.setRangeValue(.{.start = 0, .end = image.descriptor.pixels()}, false);
+        self.seen.setRangeValue(.{ .start = 0, .end = image.descriptor.pixels() }, false);
 
         var y: usize = 0;
         while (y < image.descriptor.height) : (y += 1) {
             var x: usize = 0;
             while (x < image.descriptor.width) : (x += 1) {
-                const coarse = (try self.extractStar(image, @intCast(u16, x), @intCast(u16, y))) orelse continue;
+                const coarse = (try self.extractStar(image, @as(u16, @intCast(x)), @as(u16, @intCast(y)))) orelse continue;
                 try stars.append(a, coarse);
             }
         }
@@ -84,16 +84,16 @@ pub const CoarseStarExtractor = struct {
         // Relative magnitude is computed from the size. By assuming that a star is roughly round,
         // we can assume that i is the area. Divide by pi for fancyness, but the value is still pretty arbitrary.
         return CoarseStar{
-            .x = @intToFloat(f32, x_avg) / @intToFloat(f32, i),
-            .y = @intToFloat(f32, y_avg) / @intToFloat(f32, i),
-            .size = @intCast(u32, i),
+            .x = @as(f32, @floatFromInt(x_avg)) / @as(f32, @floatFromInt(i)),
+            .y = @as(f32, @floatFromInt(y_avg)) / @as(f32, @floatFromInt(i)),
+            .size = @as(u32, @intCast(i)),
         };
     }
 
     fn enqueue(self: *CoarseStarExtractor, image: Image, x: u16, y: u16) !bool {
         const pixel = image.pixel(x, y)[0];
         if (pixel >= cutoff and self.markSeen(image, x, y)) {
-            try self.queue.writeItem(.{.x = x, .y = y});
+            try self.queue.writeItem(.{ .x = x, .y = y });
             return true;
         }
         return false;

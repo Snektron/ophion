@@ -124,7 +124,7 @@ pub fn flatPixel(self: Image, offset: usize) []f32 {
 }
 
 pub fn data(self: Image) []f32 {
-    return self.pixels[0 .. self.descriptor.size()];
+    return self.pixels[0..self.descriptor.size()];
 }
 
 pub fn managed(self: Image, a: Allocator) Managed {

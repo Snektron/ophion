@@ -10,17 +10,17 @@ pub fn apply(image: Image, maybe_dark: ?Image, maybe_bias: ?Image, opts: Options
         const dark_data = dark.data();
         if (maybe_bias) |bias| {
             const bias_data = bias.data();
-            for (image.data()) |*channel, i| {
+            for (image.data(), 0..) |*channel, i| {
                 channel.* = channel.* - dark_data[i] * opts.dark_frame_multiplier - bias_data[i];
             }
         } else {
-            for (image.data()) |*channel, i| {
+            for (image.data(), 0..) |*channel, i| {
                 channel.* = channel.* - dark_data[i] * opts.dark_frame_multiplier;
             }
         }
     } else if (maybe_bias) |bias| {
         const bias_data = bias.data();
-        for (image.data()) |*channel, i| {
+        for (image.data(), 0..) |*channel, i| {
             channel.* = channel.* - bias_data[i];
         }
     }

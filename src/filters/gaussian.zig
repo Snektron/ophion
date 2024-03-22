@@ -33,8 +33,8 @@ pub const Kernel = struct {
 
     fn computeCoefficients(coefficients: []f32, stddev: f32) void {
         const variance = stddev * stddev;
-        for (coefficients) |*coeff, i| {
-            const x = @intToFloat(f32, i);
+        for (coefficients, 0..) |*coeff, i| {
+            const x = @as(f32, @floatFromInt(i));
             coeff.* = @exp(-x * x / (2 * variance));
         }
 
@@ -60,7 +60,7 @@ pub const Kernel = struct {
     }
 
     pub fn radiusForStddev(stddev: f32) usize {
-        return @floatToInt(usize, @ceil(stddev * stddev_to_radius_factor));
+        return @as(usize, @intFromFloat(@ceil(stddev * stddev_to_radius_factor)));
     }
 
     pub fn horizontalRadius(self: Kernel) usize {
@@ -72,7 +72,7 @@ pub const Kernel = struct {
     }
 
     pub fn getHorizontal(self: Kernel, x: isize) f32 {
-        return self.coefficients[std.math.absCast(x)];
+        return self.coefficients[@abs(x)];
     }
 
     pub fn getVertical(self: Kernel, y: isize) f32 {

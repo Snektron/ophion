@@ -14,6 +14,6 @@ pub fn apply(dst: *Image.Managed, src: Image) !void {
         for (src.flatPixel(i)) |channel| {
             total += channel;
         }
-        dst.flatPixel(i)[0] = total / @intToFloat(f32, src.descriptor.components);
+        dst.flatPixel(i)[0] = total / @as(f32, @floatFromInt(src.descriptor.components));
     }
 }

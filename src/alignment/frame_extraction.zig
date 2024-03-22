@@ -33,14 +33,14 @@ pub const FrameStack = struct {
 
     pub fn numStars(self: FrameStack, i: usize, first_star: []const u32) u32 {
         return if (i == self.frames.len - 1)
-            @intCast(u32, self.stars.len) - first_star[i]
+            @as(u32, @intCast(self.stars.len)) - first_star[i]
         else
             first_star[i + 1] - first_star[i];
     }
 
     pub fn numConstellations(self: FrameStack, i: usize, first_constellation: []const u32) u32 {
         return if (i == self.frames.len - 1)
-            @intCast(u32, self.constellations.len) - first_constellation[i]
+            @as(u32, @intCast(self.constellations.len)) - first_constellation[i]
         else
             first_constellation[i + 1] - first_constellation[i];
     }
@@ -78,7 +78,7 @@ pub const FrameExtractor = struct {
         defer constellation_extractor.deinit(self.a);
 
         // TODO: make everything configurable
-        var gaussian_kernel = filters.gaussian.Kernel.init(3);
+        const gaussian_kernel = filters.gaussian.Kernel.init(3);
 
         var tmp_grayscale = self.tmp_grayscale.managed(self.a);
         var tmp_starmask = self.tmp_starmask.managed(self.a);
@@ -94,7 +94,7 @@ pub const FrameExtractor = struct {
         };
         errdefer frame_stack.deinit(a);
 
-        for (images) |image, i| {
+        for (images, 0..) |image, i| {
             if (i != 0) extract_progress.completeOne();
 
             try filters.grayscale.apply(&tmp_grayscale, image);
@@ -124,9 +124,9 @@ pub const FrameExtractor = struct {
             const num_constellations = frame_stack.constellations.len - first_constellation;
             if (num_constellations > 0) {
                 try frame_stack.frames.append(a, .{
-                    .image_index = @intCast(u32, i),
-                    .first_star = @intCast(u32, first_star),
-                    .first_constellation = @intCast(u32, first_constellation),
+                    .image_index = @as(u32, @intCast(i)),
+                    .first_star = @as(u32, @intCast(first_star)),
+                    .first_constellation = @as(u32, @intCast(first_constellation)),
                 });
             } else {
                 frame_stack.stars.len = first_star;

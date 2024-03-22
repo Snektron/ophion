@@ -27,7 +27,7 @@ pub fn BoundedMinSet(
         }
 
         pub fn insert(self: *Self, new: T) void {
-            const index = for (self.items) |item, i| {
+            const index = for (self.items, 0..) |item, i| {
                 if (cmp(self.context, new, item).compare(.lt)) {
                     break i;
                 }
@@ -62,23 +62,23 @@ test "BoundedMinSet" {
     try testing.expectEqualSlices(usize, &.{5}, minset.items);
 
     minset.insert(7);
-    try testing.expectEqualSlices(usize, &.{5, 7}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 5, 7 }, minset.items);
 
     minset.insert(3);
-    try testing.expectEqualSlices(usize, &.{3, 5, 7}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 3, 5, 7 }, minset.items);
 
     minset.insert(4);
-    try testing.expectEqualSlices(usize, &.{3, 4, 5, 7}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 3, 4, 5, 7 }, minset.items);
 
     minset.insert(6);
-    try testing.expectEqualSlices(usize, &.{3, 4, 5, 6, 7}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 3, 4, 5, 6, 7 }, minset.items);
 
     minset.insert(1);
-    try testing.expectEqualSlices(usize, &.{1, 3, 4, 5, 6}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 1, 3, 4, 5, 6 }, minset.items);
 
     minset.insert(2);
-    try testing.expectEqualSlices(usize, &.{1, 2, 3, 4, 5}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 1, 2, 3, 4, 5 }, minset.items);
 
     minset.insert(8);
-    try testing.expectEqualSlices(usize, &.{1, 2, 3, 4, 5}, minset.items);
+    try testing.expectEqualSlices(usize, &.{ 1, 2, 3, 4, 5 }, minset.items);
 }

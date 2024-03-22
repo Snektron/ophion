@@ -10,7 +10,7 @@ pub const ppm = @import("formats/ppm.zig");
 pub fn Encoder(
     comptime Context: type,
     comptime EncodeError: type,
-    comptime encodeFn: fn(context: Context, source: *StreamSource, image: Image) EncodeError!void,
+    comptime encodeFn: fn (context: Context, source: *StreamSource, image: Image) EncodeError!void,
 ) type {
     return struct {
         const Self = @This();
@@ -23,7 +23,7 @@ pub fn Encoder(
         }
 
         pub fn encodeFile(self: Self, file: File, image: Image) !void {
-            var ss = StreamSource{.file = file};
+            var ss = StreamSource{ .file = file };
             return try self.encode(&ss, image);
         }
 
@@ -38,7 +38,7 @@ pub fn Encoder(
 pub fn Decoder(
     comptime Context: type,
     comptime DecodeError: type,
-    comptime decodeFn: fn(context: Context, image: *Image.Managed, source: *StreamSource) DecodeError!void,
+    comptime decodeFn: fn (context: Context, image: *Image.Managed, source: *StreamSource) DecodeError!void,
 ) type {
     return struct {
         const Self = @This();
@@ -51,7 +51,7 @@ pub fn Decoder(
         }
 
         pub fn decodeFile(self: Self, image: *Image.Managed, file: File) !void {
-            var ss = StreamSource{.file = file};
+            var ss = StreamSource{ .file = file };
             return try self.decode(image, &ss);
         }
 

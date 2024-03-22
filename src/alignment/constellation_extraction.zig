@@ -33,11 +33,11 @@ pub const Constellation = struct {
         const d2 = distSq3(a.distances[0] - b.distances[2], a.distances[1] - b.distances[0], a.distances[2] - b.distances[1]);
 
         return if (d0 < d1 and d0 < d2)
-            CompareResult{.distance_sq = d0, .rotation = 0}
+            CompareResult{ .distance_sq = d0, .rotation = 0 }
         else if (d1 < d2)
-            CompareResult{.distance_sq = d1, .rotation = 1}
+            CompareResult{ .distance_sq = d1, .rotation = 1 }
         else
-            CompareResult{.distance_sq = d2, .rotation = 2};
+            CompareResult{ .distance_sq = d2, .rotation = 2 };
     }
 
     pub fn rotate(self: Constellation, rotation: u8) Constellation {
@@ -55,7 +55,7 @@ pub const ConstellationList = std.MultiArrayList(Constellation);
 
 pub const Options = struct {
     /// The number of closest stars to consider when forming constellations.
-    form_constellations_with: u32 = 50,
+    form_constellations_with: u32 = 20,
 };
 
 const Context = struct {
@@ -104,7 +104,7 @@ pub const ConstellationExtractor = struct {
 
         var i: u32 = 0;
         while (i < xs.len) : (i += 1) {
-            var context = Context{
+            const context = Context{
                 .xs = xs,
                 .ys = ys,
                 .target = i,
@@ -130,8 +130,8 @@ pub const ConstellationExtractor = struct {
         i: u32,
         closest_stars: []const u32,
     ) !void {
-        for (closest_stars[0..closest_stars.len - 1]) |j, offset| {
-            for (closest_stars[offset + 1..]) |k| {
+        for (closest_stars[0 .. closest_stars.len - 1], 0..) |j, offset| {
+            for (closest_stars[offset + 1 ..]) |k| {
                 try addConstellation(a, constellations, xs, ys, i, j, k);
             }
         }

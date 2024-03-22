@@ -21,7 +21,7 @@ pub const Denoiser = struct {
     pub fn apply(self: *Denoiser, image: Image) !void {
         try filters.grayscale.apply(&self.tmp, image);
         const sorted = self.tmp.data();
-        std.sort.sort(f32, sorted, {}, comptime std.sort.asc(f32));
+        std.sort.block(f32, sorted, {}, comptime std.sort.asc(f32));
 
         const median = if (sorted.len % 2 == 0) blk: {
             const a = sorted[sorted.len / 2];

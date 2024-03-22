@@ -23,7 +23,6 @@ pub const FrameOffset = struct {
 pub const FrameOffsetList = std.MultiArrayList(FrameOffset);
 
 pub const FrameAligner = struct {
-
     a: Allocator,
     /// All currently known stars, relative to the reference frame.
     all_stars: StarList = .{},
@@ -95,7 +94,7 @@ pub const FrameAligner = struct {
         const first_constellation = frame_stack.frames.items(.first_constellation);
         const num_constellations = frame_stack.numConstellations(frame, first_constellation);
         const off = first_constellation[frame];
-        var min_dist_sq: f32 = std.math.f32_max;
+        var min_dist_sq: f32 = std.math.floatMax(f32);
         var min_i: u32 = 0;
         var min_j: u32 = 0;
         var rot_j: u8 = 0;
@@ -130,10 +129,10 @@ pub const FrameAligner = struct {
             .internal_constellation = undefined,
             .frame_constellation = undefined,
             .frame_rotation = undefined,
-            .distance_sq = std.math.f32_max,
+            .distance_sq = std.math.floatMax(f32),
         };
         var unprocessed_frames_index: usize = undefined;
-        for (self.unprocessed_frames.items) |frame_index, i| {
+        for (self.unprocessed_frames.items, 0..) |frame_index, i| {
             const pair = self.closestConstellation(frame_index, frame_stack);
             if (pair.distance_sq < closest_pair.distance_sq) {
                 closest_frame = frame_index;
@@ -160,8 +159,8 @@ pub const FrameAligner = struct {
             dy += s0y - s1y;
         }
 
-        dy /= @intToFloat(f32, c0.stars.len);
-        dx /= @intToFloat(f32, c0.stars.len);
+        dy /= @as(f32, @floatFromInt(c0.stars.len));
+        dx /= @as(f32, @floatFromInt(c0.stars.len));
 
         try self.addStars(closest_frame, frame_stack, dx, dy);
         _ = self.unprocessed_frames.swapRemove(unprocessed_frames_index);
@@ -192,6 +191,7 @@ pub const FrameAligner = struct {
         var align_progress = progress.start("Aligning frames", frame_stack.frames.len);
         defer align_progress.end();
         align_progress.activate();
+        progress.context.refresh();
 
         const first_star = frame_stack.frames.items(.first_star);
 

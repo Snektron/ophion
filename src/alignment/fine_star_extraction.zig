@@ -28,8 +28,8 @@ fn extractStar(
     coarse_x: f32,
     coarse_y: f32,
 ) ?FineStar {
-    const x = @floatToInt(usize, coarse_x);
-    const y = @floatToInt(usize, coarse_y);
+    const x = @as(usize, @intFromFloat(coarse_x));
+    const y = @as(usize, @intFromFloat(coarse_y));
     // If too close to the edge, we won't get a good extraction.
     if (x < radius or y < radius or x + radius >= image.descriptor.width or y + radius >= image.descriptor.height)
         return null;
@@ -44,8 +44,8 @@ fn extractStar(
             var iy = y - radius;
             while (iy < y + radius) : (iy += 1) {
                 const pixel = image.pixel(ix, iy)[0];
-                total_x += @intToFloat(f32, ix) * pixel;
-                total_y += @intToFloat(f32, iy) * pixel;
+                total_x += @as(f32, @floatFromInt(ix)) * pixel;
+                total_y += @as(f32, @floatFromInt(iy)) * pixel;
                 total += pixel;
             }
         }
@@ -62,8 +62,8 @@ fn extractStar(
             var iy = y - radius;
             while (iy < y + radius) : (iy += 1) {
                 const pixel = image.pixel(x, iy)[0];
-                const dx = (@intToFloat(f32, ix) - cx) * pixel;
-                const dy = (@intToFloat(f32, iy) - cy) * pixel;
+                const dx = (@as(f32, @floatFromInt(ix)) - cx) * pixel;
+                const dy = (@as(f32, @floatFromInt(iy)) - cy) * pixel;
                 variance += dx * dx + dy * dy;
             }
         }

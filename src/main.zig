@@ -9,7 +9,9 @@ const alignment = @import("alignment.zig");
 const log = std.log;
 const FitsDecoder = formats.fits.FitsDecoder;
 
-pub const log_level = .debug;
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+};
 
 const Options = struct {
     const Command = union(enum) {
@@ -81,7 +83,7 @@ const Options = struct {
         while (args.next()) |arg| {
             if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
                 output = args.next() orelse {
-                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{ arg });
+                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{arg});
                     return error.InvalidArgs;
                 };
             } else if (std.mem.eql(u8, arg, "--dark")) {
@@ -106,7 +108,7 @@ const Options = struct {
 
         return Command{
             .stack = .{
-                .inputs = inputs.toOwnedSlice(),
+                .inputs = try inputs.toOwnedSlice(),
                 .output = output,
                 .dark = dark,
                 .bias = bias,
@@ -123,7 +125,7 @@ const Options = struct {
         while (args.next()) |arg| {
             if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
                 output = args.next() orelse {
-                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{ arg });
+                    try stderr.print("Error: Missing required argument <path> to {s}\n", .{arg});
                     return error.InvalidArgs;
                 };
             } else {
@@ -138,7 +140,7 @@ const Options = struct {
 
         return Command{
             .pixel_median = .{
-                .inputs = inputs.toOwnedSlice(),
+                .inputs = try inputs.toOwnedSlice(),
                 .output = output,
             },
         };
@@ -146,8 +148,8 @@ const Options = struct {
 
     fn deinit(self: Options, a: Allocator) void {
         switch (self.command) {
-            .stack => |stack| a.free(stack.inputs),
-            .pixel_median => |pixel_median| a.free(pixel_median.inputs),
+            .stack => |cmd| a.free(cmd.inputs),
+            .pixel_median => |cmd| a.free(cmd.inputs),
             .help => {},
         }
     }
@@ -180,7 +182,7 @@ fn printHelp(prog_name: []const u8) !void {
         \\    -o --output <path>
         \\        Write the result to this path.
         \\
-        ,
+    ,
         .{prog_name},
     );
 }
@@ -206,14 +208,14 @@ fn importImages(cwd: std.fs.Dir, fits_decoder: *FitsDecoder, progress: *Progress
     defer load_progress.end();
     load_progress.activate();
 
-    var images = try a.alloc(Image, paths.len);
+    const images = try a.alloc(Image, paths.len);
     errdefer a.free(images);
 
     // Initialize images just so that we can make the defer easier.
     for (images) |*image| image.* = Image.empty;
     errdefer for (images) |image| image.deinit(a);
 
-    for (images) |*image, i| {
+    for (images, 0..) |*image, i| {
         // https://github.com/ziglang/zig/pull/10859#issuecomment-1159508818
         if (i != 0) load_progress.completeOne();
 
@@ -239,16 +241,14 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
         var image = Image.Managed.empty(allocator);
         try importImage(&image, &fits_decoder, cwd, path);
         break :blk image.unmanaged();
-    } else
-        null;
+    } else null;
     defer if (dark_image) |image| image.deinit(allocator);
 
     const bias_image = if (opts.bias) |path| blk: {
         var image = Image.Managed.empty(allocator);
         try importImage(&image, &fits_decoder, cwd, path);
         break :blk image.unmanaged();
-    } else
-        null;
+    } else null;
     defer if (bias_image) |image| image.deinit(allocator);
 
     const images = try importImages(cwd, &fits_decoder, progress_root, allocator, opts.inputs);
@@ -258,7 +258,7 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
     }
 
     for (images) |image| {
-        filters.dark_bias_drame.apply(image, dark_image, bias_image, .{.dark_frame_multiplier = 5.0 / 2.0});
+        filters.dark_bias_drame.apply(image, dark_image, bias_image, .{ .dark_frame_multiplier = 5.0 / 2.0 });
         filters.normalize.apply(image);
     }
 
@@ -290,12 +290,12 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
     defer offsets.deinit(allocator);
     try aligner.alignFrames(allocator, &offsets, progress_root, frame_stack);
 
-    var images_to_stack = try allocator.alloc(Image, frame_stack.frames.len);
+    const images_to_stack = try allocator.alloc(Image, frame_stack.frames.len);
     defer allocator.free(images_to_stack);
 
     {
         const image_index = frame_stack.frames.items(.image_index);
-        for (images_to_stack) |*image, i| {
+        for (images_to_stack, 0..) |*image, i| {
             image.* = images[image_index[i]];
         }
     }
@@ -323,10 +323,10 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
         try filters.stacking.apply(&result, images_to_stack, offsets.items(.dx), offsets.items(.dy));
     }
 
-    var denoiser = filters.denoise.Denoiser.init(allocator);
-    defer denoiser.deinit();
-    try denoiser.apply(result.unmanaged());
-    // filters.normalize.apply(result.unmanaged());
+    // var denoiser = filters.denoise.Denoiser.init(allocator);
+    // defer denoiser.deinit();
+    // try denoiser.apply(result.unmanaged());
+    filters.normalize.apply(result.unmanaged());
 
     if (opts.output) |path| {
         try formats.ppm.encoder(.{}).encoder().encodePath(path, result.unmanaged());
@@ -349,7 +349,7 @@ fn stack(cwd: std.fs.Dir, allocator: Allocator, opts: Options.Command.Stack) !vo
 
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit()) {
+    defer if (gpa.deinit() != .ok) {
         log.warn("Memory leaked", .{});
     };
     const allocator = gpa.allocator();

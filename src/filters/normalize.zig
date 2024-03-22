@@ -6,8 +6,8 @@ const Image = @import("../Image.zig");
 pub fn apply(image: Image) void {
     const pixels = image.data();
 
-    var min: f32 = std.math.f32_max;
-    var max: f32 = std.math.f32_min;
+    var min: f32 = std.math.floatMax(f32);
+    var max: f32 = std.math.floatMin(f32);
 
     for (pixels) |channel| {
         if (channel < min) min = channel;

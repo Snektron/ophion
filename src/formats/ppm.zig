@@ -18,13 +18,13 @@ pub const PpmEncoder = struct {
     opts: Options,
 
     fn convertChannel(channel: f32) u8 {
-        return @floatToInt(u8, std.math.clamp(channel * 255, 0, 255));
+        return @as(u8, @intFromFloat(std.math.clamp(channel * 255, 0, 255)));
     }
 
     pub fn encode(self: PpmEncoder, source: *StreamSource, image: Image) Error!void {
         assert(image.descriptor.components == 1 or image.descriptor.components == 3);
 
-        var bw = BufferedWriter{.unbuffered_writer = source.writer()};
+        var bw = BufferedWriter{ .unbuffered_writer = source.writer() };
         const writer = bw.writer();
 
         switch (image.descriptor.components) {
@@ -33,21 +33,21 @@ pub const PpmEncoder = struct {
                     try writer.print("P6 {} {} 255\n", .{ image.descriptor.width, image.descriptor.height });
                     for (image.data()) |channel| {
                         const converted = convertChannel(channel);
-                        try writer.writeIntLittle(u8, converted);
-                        try writer.writeIntLittle(u8, converted);
-                        try writer.writeIntLittle(u8, converted);
+                        try writer.writeInt(u8, converted, .little);
+                        try writer.writeInt(u8, converted, .little);
+                        try writer.writeInt(u8, converted, .little);
                     }
                 } else {
                     try writer.print("P5 {} {} 255\n", .{ image.descriptor.width, image.descriptor.height });
                     for (image.data()) |channel| {
-                        try writer.writeIntLittle(u8, convertChannel(channel));
+                        try writer.writeInt(u8, convertChannel(channel), .little);
                     }
                 }
             },
             3 => {
                 try writer.print("P6 {} {} 255\n", .{ image.descriptor.width, image.descriptor.height });
                 for (image.data()) |channel| {
-                    try writer.writeIntLittle(u8, convertChannel(channel));
+                    try writer.writeInt(u8, convertChannel(channel), .little);
                 }
             },
             else => unreachable,
@@ -56,10 +56,10 @@ pub const PpmEncoder = struct {
     }
 
     pub fn encoder(self: PpmEncoder) Encoder {
-        return Encoder{.context = self};
+        return Encoder{ .context = self };
     }
 };
 
 pub fn encoder(opts: PpmEncoder.Options) PpmEncoder {
-    return .{.opts = opts};
+    return .{ .opts = opts };
 }

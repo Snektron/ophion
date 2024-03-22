@@ -14,17 +14,17 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
     var max_x: f32 = 0;
     var max_y: f32 = 0;
 
-    for (srcs) |src, i| {
+    for (srcs, 0..) |src, i| {
         const dx = dxs[i];
         const dy = dys[i];
-        min_x = @minimum(min_x, dx);
-        min_y = @minimum(min_y, dy);
-        max_x = @maximum(max_x, dx + @intToFloat(f32, src.descriptor.width));
-        max_y = @maximum(max_y, dy + @intToFloat(f32, src.descriptor.height));
+        min_x = @min(min_x, dx);
+        min_y = @min(min_y, dy);
+        max_x = @max(max_x, dx + @as(f32, @floatFromInt(src.descriptor.width)));
+        max_y = @max(max_y, dy + @as(f32, @floatFromInt(src.descriptor.height)));
     }
 
-    const w = @floatToInt(usize, @ceil(max_x - min_x));
-    const h = @floatToInt(usize, @ceil(max_y - min_y));
+    const w = @as(usize, @intFromFloat(@ceil(max_x - min_x)));
+    const h = @as(usize, @intFromFloat(@ceil(max_y - min_y)));
 
     try dst.realloc(.{
         .width = w,
@@ -34,9 +34,9 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
 
     for (dst.data()) |*channel| channel.* = 0;
 
-    for (srcs) |src, i| {
-        const dx = @floatToInt(usize, dxs[i] - min_x);
-        const dy = @floatToInt(usize, dys[i] - min_y);
+    for (srcs, 0..) |src, i| {
+        const dx = @as(usize, @intFromFloat(dxs[i] - min_x));
+        const dy = @as(usize, @intFromFloat(dys[i] - min_y));
 
         var y: usize = 0;
         while (y < src.descriptor.height) : (y += 1) {
@@ -45,7 +45,7 @@ pub fn apply(dst: *Image.Managed, srcs: []const Image, dxs: []const f32, dys: []
                 const pixel = src.pixel(x, y);
                 // TODO: better sampling.
                 const target_pixel = dst.pixel(x + dx, y + dy);
-                for (target_pixel) |*channel, j| {
+                for (target_pixel, 0..) |*channel, j| {
                     channel.* += pixel[j];
                 }
             }

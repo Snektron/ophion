@@ -6,7 +6,7 @@ inline fn pixelOr(image: Image, x: isize, y: isize, out_of_bounds: f32) f32 {
     return if (x < 0 or y < 0 or x >= image.descriptor.width or y >= image.descriptor.height)
         out_of_bounds
     else
-        image.pixel(@intCast(usize, x), @intCast(usize, y))[0];
+        image.pixel(@as(usize, @intCast(x)), @as(usize, @intCast(y)))[0];
 }
 
 inline fn convolveVertical(
@@ -17,9 +17,9 @@ inline fn convolveVertical(
     kernel: anytype,
 ) void {
     @setRuntimeSafety(false);
-    const radius = @intCast(isize, kernel.verticalRadius());
-    const icx = @intCast(isize, cx);
-    const icy = @intCast(isize, cy);
+    const radius = @as(isize, @intCast(kernel.verticalRadius()));
+    const icx = @as(isize, @intCast(cx));
+    const icy = @as(isize, @intCast(cy));
     var y: isize = -radius;
     var pixel: f32 = 0;
     while (y <= radius) : (y += 1) {
@@ -36,9 +36,9 @@ inline fn convolveHorizontal(
     kernel: anytype,
 ) void {
     @setRuntimeSafety(false);
-    const radius = @intCast(isize, kernel.horizontalRadius());
-    const icx = @intCast(isize, cx);
-    const icy = @intCast(isize, cy);
+    const radius = @as(isize, @intCast(kernel.horizontalRadius()));
+    const icx = @as(isize, @intCast(cx));
+    const icy = @as(isize, @intCast(cy));
     var x: isize = -radius;
     var pixel: f32 = 0;
     while (x <= radius) : (x += 1) {
@@ -84,7 +84,7 @@ pub const Box = struct {
     pub fn init(radius: usize) Box {
         return .{
             .radius = radius,
-            .inv_diam = 1 / @intToFloat(f32, radius * 2 + 1),
+            .inv_diam = 1 / @as(f32, @floatFromInt(radius * 2 + 1)),
         };
     }
 

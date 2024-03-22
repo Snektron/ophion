@@ -14,9 +14,12 @@ pub fn apply(dst: *Image.Managed, src: Image, opts: Options) !void {
     const mean = filters.statistics.mean(src);
     const stddev = filters.statistics.stddev(src, mean);
 
+    _ = opts;
+    _ = stddev;
+
     const result_data = dst.data();
-    for (src.data()) |channel, i| {
-        if (channel > opts.min_stddev * stddev + mean) {
+    for (src.data(), 0..) |channel, i| {
+        if (channel > 0.2) {
             result_data[i] = 1;
         } else {
             result_data[i] = 0;

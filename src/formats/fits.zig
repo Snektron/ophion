@@ -32,8 +32,8 @@ pub const KeywordBuffer = [bytes_per_keyword]u8;
 /// Minimum alignment for data bytes.
 pub const data_align = blk: {
     var max_align = 1;
-    inline for (@typeInfo(Data).Union.fields) |field| {
-        max_align = std.math.max(@alignOf(std.meta.Child(field.field_type)), max_align);
+    for (@typeInfo(Data).Union.fields) |field| {
+        max_align = @max(@alignOf(std.meta.Child(field.type)), max_align);
     }
     break :blk max_align;
 };
@@ -62,7 +62,7 @@ pub const Key = struct {
         var result = Key{
             .key = " ".* ** bytes_per_keyword_key,
         };
-        std.mem.copy(u8, &result.key, key_name);
+        @memcpy(result.key[0..key_name.len], key_name);
         return result;
     }
 
@@ -119,7 +119,7 @@ pub const Value = union(enum) {
 
     fn toFloat(self: Value) ?f64 {
         return switch (self) {
-            .int => |value| @intToFloat(f32, value),
+            .int => |value| @as(f32, @floatFromInt(value)),
             .float => |value| value,
             else => null,
         };
@@ -159,7 +159,7 @@ pub const Format = enum(i8) {
 
     /// Return the number of bits making up an individual element in this format.
     fn bitSize(self: Format) u8 {
-        return std.math.absCast(@enumToInt(self));
+        return @abs(@intFromEnum(self));
     }
 
     /// Return the number of bytes making up an individual data element in this format.
@@ -274,7 +274,7 @@ pub const Hdu = struct {
             .extension => |ext| try writer.print("    kind = extension {s},\n", .{@tagName(ext)}),
         }
         try writer.print("    format = {s},\n    shape = ", .{@tagName(self.format)});
-        for (self.shape) |axis, i| {
+        for (self.shape, 0..) |axis, i| {
             if (i != 0) {
                 try writer.writeByte('x');
             }
@@ -322,7 +322,7 @@ pub const Fits = struct {
 
     pub fn dump(self: Fits, writer: anytype) !void {
         try writer.writeAll("{\n");
-        for (self.hdus) |hdu, i| {
+        for (self.hdus, 0..) |hdu, i| {
             try writer.print("  hdu[{}] = ", .{i});
             try hdu.dump(writer);
         }
@@ -340,7 +340,7 @@ pub const Fits = struct {
     /// Endianness is fixed to little, if required.
     pub fn readData(self: Fits, hdu: *const Hdu, storage: []align(data_align) u8) !Data {
         // Ensure that the pointer is one of ours.
-        assert(@ptrToInt(self.hdus.ptr) <= @ptrToInt(hdu) and @ptrToInt(hdu) < @ptrToInt(self.hdus.ptr + self.hdus.len));
+        assert(@intFromPtr(self.hdus.ptr) <= @intFromPtr(hdu) and @intFromPtr(hdu) < @intFromPtr(self.hdus.ptr + self.hdus.len));
         try self.source.seekTo(hdu.data_offset);
 
         // First read all the data into the buffer raw, and then swap them after if required.
@@ -360,17 +360,17 @@ pub const Fits = struct {
 
         // Written out because stage 2 cannot cope with an inline for loop here...
         return switch (hdu.format) {
-            .int8 => .{.int8 = std.mem.bytesAsSlice(i8, buffer)},
-            .int16 => .{.int16 = std.mem.bytesAsSlice(i16, buffer)},
-            .int32 => .{.int32 = std.mem.bytesAsSlice(i32, buffer)},
-            .int64 => .{.int64 = std.mem.bytesAsSlice(i64, buffer)},
-            .float32 => .{.float32 = std.mem.bytesAsSlice(f32, buffer)},
-            .float64 => .{.float64 = std.mem.bytesAsSlice(f64, buffer)},
+            .int8 => .{ .int8 = std.mem.bytesAsSlice(i8, buffer) },
+            .int16 => .{ .int16 = std.mem.bytesAsSlice(i16, buffer) },
+            .int32 => .{ .int32 = std.mem.bytesAsSlice(i32, buffer) },
+            .int64 => .{ .int64 = std.mem.bytesAsSlice(i64, buffer) },
+            .float32 => .{ .float32 = std.mem.bytesAsSlice(f32, buffer) },
+            .float64 => .{ .float64 = std.mem.bytesAsSlice(f64, buffer) },
         };
     }
 
     pub fn readDataAlloc(self: Fits, hdu: *const Hdu, a: Allocator) !Data {
-        var storage = try a.allocWithOptions(u8, hdu.dataSize(), data_align, null);
+        const storage = try a.allocWithOptions(u8, hdu.dataSize(), data_align, null);
         errdefer a.free(storage);
         return try self.readData(hdu, storage);
     }
@@ -401,7 +401,7 @@ pub fn read(a: Allocator, source: *StreamSource) !Fits {
         .a = a,
         .arena = arena.state,
         .source = source,
-        .hdus = hdus.toOwnedSlice(),
+        .hdus = try hdus.toOwnedSlice(),
     };
 }
 
@@ -434,7 +434,7 @@ fn readHdu(gpa: Allocator, arena: Allocator, source: *StreamSource, kind: std.me
     errdefer hdu.keywords.deinit(gpa);
 
     var reader = source.reader();
-    var it = KeywordIterator{.reader = &reader};
+    var it = KeywordIterator{ .reader = &reader };
 
     switch (kind) {
         .primary => {
@@ -448,7 +448,7 @@ fn readHdu(gpa: Allocator, arena: Allocator, source: *StreamSource, kind: std.me
         .extension => {
             const name = try it.expectType("XTENSION", .string);
             const extension = std.meta.stringToEnum(Extension, name) orelse return error.InvalidExtension;
-            hdu.kind = .{.extension = extension};
+            hdu.kind = .{ .extension = extension };
         },
     }
 
@@ -462,22 +462,22 @@ fn readHdu(gpa: Allocator, arena: Allocator, source: *StreamSource, kind: std.me
         return error.InvalidAxes;
     }
 
-    hdu.shape = try arena.alloc(usize, @intCast(usize, naxis));
+    hdu.shape = try arena.alloc(usize, @as(usize, @intCast(naxis)));
 
-    for (hdu.shape) |*axis, i| {
+    for (hdu.shape, 0..) |*axis, i| {
         const kw = (try it.next()) orelse {
             log.err("Missing axis {}", .{i + 1});
             return error.InvalidAxes;
         };
 
         if (!std.mem.startsWith(u8, kw.key.name(), "NAXIS")) {
-            log.err("Expected keyword NAXIS{}, found keyword {s}", .{i + 1, kw.key});
+            log.err("Expected keyword NAXIS{}, found keyword {s}", .{ i + 1, kw.key });
             return error.InvalidAxes;
         }
 
         const num = std.fmt.parseInt(u64, kw.key.name()["NAXIS".len..], 10) catch return error.InvalidAxes;
         if (num != i + 1) {
-            log.err("Expected axis {}, found axis {}", .{i + 1, num});
+            log.err("Expected axis {}, found axis {}", .{ i + 1, num });
             return error.InvalidAxes;
         }
 
@@ -491,7 +491,7 @@ fn readHdu(gpa: Allocator, arena: Allocator, source: *StreamSource, kind: std.me
     while (try it.next()) |kw| {
         const value = switch (kw.value) {
             .string => |str| blk: {
-                break :blk Value{.string = try arena.dupe(u8, str)};
+                break :blk Value{ .string = try arena.dupe(u8, str) };
             },
             else => |value| value,
         };
@@ -536,7 +536,7 @@ const KeywordIterator = struct {
             return error.InvalidKeyword;
         };
         if (!kw.key.eql(key_name)) {
-            log.err("Expected keyword {s}, found {s}", .{key_name, kw.key});
+            log.err("Expected keyword {s}, found {s}", .{ key_name, kw.key });
             return error.InvalidKeyword;
         }
         return kw.value;
@@ -597,20 +597,20 @@ const Keyword = struct {
             if (kw[i] != ' ') break;
         } else {
             // No value, no comment
-            return Keyword {
+            return Keyword{
                 .key = Key.init(name),
                 .value = .none,
                 .comment = null,
             };
         }
 
-        var value_parser = ValueParser{.kw = kw, .index = i};
+        var value_parser = ValueParser{ .kw = kw, .index = i };
         const value = switch (kw[i]) {
             ' ' => unreachable,
             '/' => Value.none,
             'T', 'F' => blk: {
                 defer i += 1;
-                break :blk Value{.logical = kw[i] == 'T'};
+                break :blk Value{ .logical = kw[i] == 'T' };
             },
             '\'' => try value_parser.readString(),
             '(' => try value_parser.readComplex(),
@@ -620,7 +620,7 @@ const Keyword = struct {
 
         value_parser.skipSpaces();
         i = value_parser.index;
-        const comment = if (i != bytes_per_keyword and kw[i] == '/') kw[i + 1..] else null;
+        const comment = if (i != bytes_per_keyword and kw[i] == '/') kw[i + 1 ..] else null;
         return Keyword{
             .key = Key.init(name),
             .value = value,
@@ -664,8 +664,8 @@ const ValueParser = struct {
         }
 
         return switch (a) {
-            .int => Value{.complex_int = std.math.Complex(i64).init(a.int, b.int)},
-            .float => Value{.complex_float = std.math.Complex(f64).init(a.float, b.float)},
+            .int => Value{ .complex_int = std.math.Complex(i64).init(a.int, b.int) },
+            .float => Value{ .complex_float = std.math.Complex(f64).init(a.float, b.float) },
             else => unreachable,
         };
     }
@@ -740,7 +740,7 @@ const ValueParser = struct {
                     error.InvalidCharacter => unreachable,
                     error.Overflow => return error.OutOfRangeInt,
                 };
-                return Value{.int = val};
+                return Value{ .int = val };
             },
             .dot, .fraction_digits, .exp_digits => {
                 if (maybe_exp_index) |exp_index| {
@@ -750,10 +750,10 @@ const ValueParser = struct {
 
                     self.kw[exp_index] = 'E';
                     const val = std.fmt.parseFloat(f64, text) catch unreachable;
-                    return Value{.float = val};
+                    return Value{ .float = val };
                 } else {
                     const val = std.fmt.parseFloat(f64, text) catch unreachable;
-                    return Value{.float = val};
+                    return Value{ .float = val };
                 }
             },
         }
@@ -817,12 +817,12 @@ const ValueParser = struct {
                 return error.UnterminatedString;
         }
 
-        return Value{.string = self.kw[start..end]};
+        return Value{ .string = self.kw[start..end] };
     }
 };
 
 pub const FitsDecoder = struct {
-    pub const Error = StreamSource.ReadError || StreamSource.GetSeekPosError || error{InvalidFitsImage, OutOfMemory};
+    pub const Error = StreamSource.ReadError || StreamSource.GetSeekPosError || error{ InvalidFitsImage, OutOfMemory };
     pub const Decoder = formats.Decoder(*FitsDecoder, Error, decode);
 
     /// Allocator to perform temporary allocations with,
@@ -859,6 +859,7 @@ pub const FitsDecoder = struct {
         // - 2d data with no bayer matrix info (read as grayscale)
         // - 2d data with bayer matrix info (decode bayer matrix into rgb)
         const hdu = &fits.hdus[0];
+
         switch (hdu.shape.len) {
             2 => if (hdu.keywords.get(Key.init("BAYERPAT"))) |bayerpat| {
                 return try self.decode2DBayer(image, fits, bayerpat.value);
@@ -866,14 +867,45 @@ pub const FitsDecoder = struct {
                 log.err("TODO: Implement 2D grayscale data decoding", .{});
                 unreachable;
             },
-            3 => {
-                log.err("TODO: Implement 3D data decoding", .{});
+            3 => if (hdu.shape[2] == 3) {
+                return try self.decode3DRGB(image, fits);
+            } else {
+                log.err("TODO: Implement 3D data decoding for non-rgb", .{});
                 unreachable;
             },
             else => {
                 log.err("fits image has {} dimensions, expected 2 or 3", .{hdu.shape.len});
                 return error.InvalidFitsImage;
             },
+        }
+    }
+
+    fn decode3DRGB(self: *FitsDecoder, dst: *Image.Managed, fits: Fits) !void {
+        const hdu = &fits.hdus[0];
+        try self.pixel_cache.resize(self.a, hdu.dataSize());
+        const pixels = try fits.readData(hdu, self.pixel_cache.items);
+
+        try dst.realloc(.{
+            .width = hdu.shape[0],
+            .height = hdu.shape[1],
+            .components = 3,
+        });
+
+        switch (pixels) {
+            .int8 => |src| {
+                for (0..hdu.shape[0]) |x| {
+                    for (0..hdu.shape[1]) |y| {
+                        for (0..3) |c| {
+                            // The channels is in the outermost array in the fits image, so we have to reshape here.
+                            const dst_offset = (y * hdu.shape[0] + x) * 3 + c;
+                            const src_offset = (c * hdu.shape[1] + y) * hdu.shape[0] + x;
+                            // TODO: Properly apply DATAMIN/DATAMAX/BSCALE/BZERO or something...
+                            dst.pixels[dst_offset] = @as(f32, @floatFromInt(@as(u8, @bitCast(src[src_offset])))) / 255;
+                        }
+                    }
+                }
+            },
+            else => unreachable, // TODO
         }
     }
 
@@ -897,7 +929,7 @@ pub const FitsDecoder = struct {
                     log.warn("BSCALE {} not convertable to float, falling back to 1", .{bscale_value.value});
                     break :blk 1;
                 };
-                break :blk @floatCast(f32, value);
+                break :blk @as(f32, @floatCast(value));
             }
             break :blk 1;
         };
@@ -908,7 +940,7 @@ pub const FitsDecoder = struct {
                     log.warn("BZERO {} not convertable to float, falling back to 0", .{bzero_value.value});
                     break :blk 0;
                 };
-                break :blk @floatCast(f32, value);
+                break :blk @as(f32, @floatCast(value));
             }
             break :blk 1;
         };
@@ -916,7 +948,7 @@ pub const FitsDecoder = struct {
         // Ensure that we have enough data for both the image data directly as well
         // as the image data converted to floats, so that we can perform the conversion in-place.
         const num_elements = hdu.numElements();
-        try self.pixel_cache.resize(self.a, @maximum(hdu.dataSize(), num_elements * @sizeOf(f32)));
+        try self.pixel_cache.resize(self.a, @max(hdu.dataSize(), num_elements * @sizeOf(f32)));
         const pixels = try fits.readData(hdu, self.pixel_cache.items);
         const floating_pixels = std.mem.bytesAsSlice(f32, self.pixel_cache.items);
 
@@ -928,27 +960,27 @@ pub const FitsDecoder = struct {
                 var i: usize = num_elements;
                 while (i > 0) {
                     i -= 1;
-                    floating_pixels[i] = @intToFloat(f32, px[i]) * bscale + bzero;
+                    floating_pixels[i] = @as(f32, @floatFromInt(px[i])) * bscale + bzero;
                 }
             },
             .int16 => |px| {
                 var i: usize = num_elements;
                 while (i > 0) {
                     i -= 1;
-                    floating_pixels[i] = @intToFloat(f32, px[i]) * bscale + bzero;
+                    floating_pixels[i] = @as(f32, @floatFromInt(px[i])) * bscale + bzero;
                 }
             },
-            .int32 => |px| for (px) |x, i| {
-                floating_pixels[i] = @intToFloat(f32, x) * bscale + bzero;
+            .int32 => |px| for (px, 0..) |x, i| {
+                floating_pixels[i] = @as(f32, @floatFromInt(x)) * bscale + bzero;
             },
-            .float32 => |px| for (px) |x, i| {
+            .float32 => |px| for (px, 0..) |x, i| {
                 floating_pixels[i] = x * bscale + bzero;
             },
-            .int64 => |px| for (px) |x, i| {
-                floating_pixels[i] = @intToFloat(f32, x) * bscale + bzero;
+            .int64 => |px| for (px, 0..) |x, i| {
+                floating_pixels[i] = @as(f32, @floatFromInt(x)) * bscale + bzero;
             },
-            .float64 => |px| for (px) |x, i| {
-                floating_pixels[i] = @floatCast(f32, x) * bscale + bzero;
+            .float64 => |px| for (px, 0..) |x, i| {
+                floating_pixels[i] = @as(f32, @floatCast(x)) * bscale + bzero;
             },
         }
 
@@ -965,11 +997,10 @@ pub const FitsDecoder = struct {
     }
 
     pub fn decoder(self: *FitsDecoder) Decoder {
-        return Decoder{.context = self};
+        return Decoder{ .context = self };
     }
 };
 
 pub fn decoder(a: Allocator) FitsDecoder {
-    return .{.a = a};
+    return .{ .a = a };
 }
-

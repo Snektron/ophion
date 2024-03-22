@@ -7,7 +7,7 @@ pub fn BallTree(comptime dims: usize) type {
         const Self = @This();
 
         pub const dimensions = dims;
-        pub const Point = [dimensions]f32,
+        pub const Point = [dimensions]f32;
 
         /// Strong alias because we need to process it to get the actual indices.
         pub const NodePointer = struct {
@@ -25,7 +25,7 @@ pub fn BallTree(comptime dims: usize) type {
         };
 
         pub const Node = struct {
-            center: u32 // Always a leaf index
+            center: u32, // Always a leaf index
             radius: f32,
             inner: u32,
             outer: u32,
@@ -39,9 +39,7 @@ pub fn BallTree(comptime dims: usize) type {
             errdefer nodes.deinit();
         }
 
-        fn boundingBall(points: []const Point) !Ball {
-
-        }
+        fn boundingBall(points: []const Point) !Ball {}
 
         fn constructTree(
             nodes: *std.ArrayList(Node),
@@ -62,10 +60,9 @@ pub fn BallTree(comptime dims: usize) type {
         fn index(self: Self, ptr: NodePointer) NodeIndex {
             assert(ptr.value < self.nodes.len + self.leaves.len);
             return if (ptr.value < self.leaves.len)
-                .{.leaf = ptr.value},
+                .{ .leaf = ptr.value }
             else
-                .{.inner = ptr.value - self.leaves.len);
+                .{ .inner = ptr.value - self.leaves.len };
         }
-
     };
 }

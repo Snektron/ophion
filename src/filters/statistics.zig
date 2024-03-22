@@ -8,7 +8,7 @@ pub fn mean(image: Image) f32 {
     for (image.data()) |channel| {
         total += channel;
     }
-    return total / @intToFloat(f32, image.descriptor.size());
+    return total / @as(f32, @floatFromInt(image.descriptor.size()));
 }
 
 pub fn variance(image: Image, image_mean: f32) f32 {
@@ -18,7 +18,7 @@ pub fn variance(image: Image, image_mean: f32) f32 {
         const diff = channel - image_mean;
         sqe += diff * diff;
     }
-    return sqe / @intToFloat(f32, image.descriptor.size());
+    return sqe / @as(f32, @floatFromInt(image.descriptor.size()));
 }
 
 pub fn stddev(image: Image, image_mean: f32) f32 {
